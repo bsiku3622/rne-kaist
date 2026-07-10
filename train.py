@@ -4,10 +4,16 @@ Run with ``python train.py``. Every quantity below is SI (metres, seconds,
 Kelvin); the raw ``.npy`` files store millimetres and are converted on load.
 
 Each file under ``--data-dir`` is a structured grid of
-``(x, y, z, t, P, T)`` rows -- ``81 x 21 x 13 x 31 = 685503`` for the shipped
-``data_500W.npy``. ``P`` is the branch input and is constant within a file, so
+``(x, y, z, t, P, T)`` rows -- ``321 x 81 x 49 x 31 = 39495519`` for the shipped
+``data_100W.npy``. ``P`` is the branch input and is constant within a file, so
 the branch network only has something to learn once several files at different
 powers are present; all of them are globbed and concatenated automatically.
+
+The seven shipped grids come to 276M points, which is why the dataset stays in
+CPU memory as float32 (6.6 GB) and only the sampled batches are moved to the
+GPU. Holding it in VRAM would leave too little room for the autograd graph of
+the second-order PDE residual, and it would not survive another power being
+added to the sweep.
 """
 
 from __future__ import annotations
@@ -31,33 +37,33 @@ MM = 1.0e-3
 
 # ---------------------------------------------------------------------------
 # Fitted jointly across all seven powers by `python calibrate.py`. The
-# top-surface energy balance closes to 0.86% of peak flux. Re-run calibrate.py
+# top-surface energy balance closes to 0.89% of peak flux. Re-run calibrate.py
 # whenever the contents of the data directory change.
 # ---------------------------------------------------------------------------
-ABSORPTIVITY = 0.4593  # A [-]
-BEAM_RADIUS = 1.6971 * MM  # r_b [m]
-LASER_START_X = 4.8683 * MM
-LASER_Y = 4.9929 * MM
-SCAN_SPEED = 10.0000 * MM  # [m s^-1]
+ABSORPTIVITY = 0.4756  # A [-]
+BEAM_RADIUS = 1.5187 * MM  # r_b [m]
+LASER_START_X = 4.9789 * MM
+LASER_Y = 5.0000 * MM
+SCAN_SPEED = 10.0001 * MM  # [m s^-1]
 
-# `conductivity` follows from the fitted diffusivity alpha = 2.3935e-6 m^2/s
-# (corr 0.979 against the interior Laplacian) and the assumed rho and c_p; only
+# `conductivity` follows from the fitted diffusivity alpha = 2.3657e-6 m^2/s
+# (corr 0.978 against the interior Laplacian) and the assumed rho and c_p; only
 # the ratio k/(rho*c_p) is identifiable from the data. `convection_coeff` and
 # `emissivity` are NOT identifiable -- on the lateral faces the normal
-# derivative sits at the noise floor of the 0.5 mm export grid -- so they stay
-# as inputs. They account for ~2.5% of the top-surface balance.
+# derivative sits at the noise floor of the export grid -- so they stay as
+# inputs. They account for ~2.5% of the top-surface balance.
 PROPERTIES = ThermalProperties(
     density=7990.0,  # rho [kg m^-3]      (assumed)
     specific_heat=500.0,  # c_p [J kg^-1 K^-1] (assumed)
-    conductivity=9.5619,  # k [W m^-1 K^-1]    (= alpha * rho * c_p)
+    conductivity=9.4508,  # k [W m^-1 K^-1]    (= alpha * rho * c_p)
     convection_coeff=20.0,  # h [W m^-2 K^-1]    (assumed)
     emissivity=0.35,  # epsilon [-]        (assumed)
     ambient_temperature=298.0,  # T_amb [K]  (matches t=0 and z=0 in the data)
 )
 
-# Sub-ambient rows (~5%, minimum 289.8 K) are a solver artefact: with heating
-# only, T can never fall below T_amb. Left untouched by default rather than
-# silently editing the source data.
+# The 0.125 mm grids bottom out at exactly T_amb, so nothing is clipped. Kept
+# for the coarser exports, whose sub-ambient rows (~5%, minimum 289.8 K) were a
+# solver artefact: with heating only, T can never fall below T_amb.
 CLIP_SUBAMBIENT = False
 
 
@@ -93,50 +99,80 @@ class Domain:
         return self.lower + unit * (self.upper - self.lower)
 
 
-def load_dataset(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Load ``(x, y, z, t, P, T)`` files into coords [N,4], power [N,1], temperature [N,1].
+def load_dataset(
+    paths: list[Path], dtype: np.dtype, chunk: int = 1 << 22
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[float]]:
+    """Load the files into coords [N,4], power [N,1], temperature [N,1] and the powers.
 
     Spatial columns are converted from millimetres to metres; time is already
     in seconds and power in watts.
+
+    The files are memory-mapped and copied chunk-wise into arrays allocated once
+    at the final size and precision. Reading them whole would materialise every
+    grid at float64 and then double that again in the concatenate; at 276M rows
+    that is 26 GB of peak resident memory for a 6.6 GB result.
     """
     if not paths:
         raise FileNotFoundError("no .npy files found")
 
-    coord_blocks, power_blocks, temperature_blocks = [], [], []
+    maps = []
     for path in paths:
-        raw = np.load(path).astype(np.float64)
+        raw = np.load(path, mmap_mode="r")
         if raw.ndim != 2 or raw.shape[1] != 6:
             raise ValueError(
                 f"{path}: expected [N, 6] of (x, y, z, t, P, T), got {raw.shape}"
             )
+        maps.append((path, raw))
 
-        coords = raw[:, :4].copy()
-        coords[:, :3] *= MM
-        power = raw[:, 4:5].copy()
-        temperature = raw[:, 5:6].copy()
+    total = sum(raw.shape[0] for _, raw in maps)
+    coords = np.empty((total, 4), dtype=dtype)
+    power = np.empty((total, 1), dtype=dtype)
+    temperature = np.empty((total, 1), dtype=dtype)
 
-        below = temperature < PROPERTIES.ambient_temperature
-        if below.any():
-            message = (
-                f"{path.name}: {below.sum()} of {below.size} rows below T_amb="
-                f"{PROPERTIES.ambient_temperature} K (min {temperature.min():.2f} K)"
-            )
+    powers: list[float] = []
+    offset = 0
+    for path, raw in maps:
+        rows = raw.shape[0]
+        stop = offset + rows
+        below_count, minimum = 0, math.inf
+
+        for start in range(0, rows, chunk):
+            block = np.asarray(raw[start : start + chunk], dtype=dtype)
+            block_coords = block[:, :4]
+            block_coords[:, :3] *= MM
+            block_temperature = block[:, 5:6]
+
+            below = block_temperature < PROPERTIES.ambient_temperature
+            below_count += int(below.sum())
+            minimum = min(minimum, float(block_temperature.min()))
             if CLIP_SUBAMBIENT:
-                temperature = np.maximum(temperature, PROPERTIES.ambient_temperature)
-                print(f"[data] {message} -- clipped")
-            else:
-                print(f"[data] {message} -- kept as-is")
+                np.maximum(
+                    block_temperature, PROPERTIES.ambient_temperature, out=block_temperature
+                )
 
-        print(f"[data] {path.name}: {raw.shape[0]} rows, P={np.unique(power).tolist()} W")
-        coord_blocks.append(coords)
-        power_blocks.append(power)
-        temperature_blocks.append(temperature)
+            where = slice(offset + start, offset + min(start + chunk, rows))
+            coords[where] = block_coords
+            power[where] = block[:, 4:5]
+            temperature[where] = block_temperature
 
-    return (
-        np.concatenate(coord_blocks),
-        np.concatenate(power_blocks),
-        np.concatenate(temperature_blocks),
-    )
+        if below_count:
+            state = "clipped" if CLIP_SUBAMBIENT else "kept as-is"
+            print(
+                f"[data] {path.name}: {below_count} of {rows} rows below T_amb="
+                f"{PROPERTIES.ambient_temperature} K (min {minimum:.2f} K) -- {state}"
+            )
+
+        # `P` is constant within a file, so a strided probe is enough to check it
+        # without sorting 40M values.
+        file_power = float(raw[0, 4])
+        if not np.array_equal(np.unique(raw[::4096, 4]), np.array([file_power])):
+            raise ValueError(f"{path}: laser power is not constant within the file")
+
+        print(f"[data] {path.name}: {rows} rows, P={file_power} W")
+        powers.append(file_power)
+        offset = stop
+
+    return coords, power, temperature, sorted(set(powers))
 
 
 def peak_laser_flux(power: Tensor | float) -> Tensor | float:
@@ -237,12 +273,22 @@ def sample_data(
     coords: Tensor,
     power: Tensor,
     temperature: Tensor,
+    train_index: Tensor,
     count: int,
     generator: torch.Generator,
+    device: torch.device,
 ) -> PointSet:
-    index = torch.randint(0, coords.size(0), (count,), generator=generator, device=coords.device)
+    """Gather ``count`` training rows on the CPU and move only those to ``device``.
+
+    ``coords``, ``power`` and ``temperature`` are the full CPU-resident dataset;
+    ``train_index`` selects the rows the validation split did not claim.
+    """
+    where = torch.randint(0, train_index.numel(), (count,), generator=generator)
+    index = train_index[where]
     return PointSet(
-        laser_power=power[index], coords=coords[index], temperature=temperature[index]
+        laser_power=power[index].to(device, non_blocking=True),
+        coords=coords[index].to(device, non_blocking=True),
+        temperature=temperature[index].to(device, non_blocking=True),
     )
 
 
@@ -296,6 +342,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-physics", type=int, default=2048)
     parser.add_argument("--batch-boundary", type=int, default=1024)
     parser.add_argument("--val-fraction", type=float, default=0.1)
+    parser.add_argument(
+        "--val-points",
+        type=int,
+        default=1_000_000,
+        help="upper bound on the validation subsample; the split takes the smaller of the two",
+    )
     parser.add_argument("--log-every", type=int, default=250, help="validation and console cadence")
     parser.add_argument("--scalar-every", type=int, default=25, help="TensorBoard loss cadence")
     parser.add_argument("--seed", type=int, default=0)
@@ -318,32 +370,38 @@ def main() -> None:
     torch.set_default_dtype(dtype)
     device = torch.device(args.device)
 
-    coords_np, power_np, temperature_np = load_dataset(sorted(args.data_dir.glob("*.npy")))
+    numpy_dtype = np.float64 if args.double else np.float32
+    coords_np, power_np, temperature_np, file_powers = load_dataset(
+        sorted(args.data_dir.glob("*.npy")), numpy_dtype
+    )
 
-    coords = torch.as_tensor(coords_np, dtype=dtype, device=device)
-    power = torch.as_tensor(power_np, dtype=dtype, device=device)
-    temperature = torch.as_tensor(temperature_np, dtype=dtype, device=device)
+    # The dataset stays on the CPU; `sample_data` moves one batch at a time.
+    coords = torch.from_numpy(coords_np)
+    power = torch.from_numpy(power_np)
+    temperature = torch.from_numpy(temperature_np)
+    total_points = coords.size(0)
 
-    domain = Domain(bounds=torch.stack((coords.min(dim=0).values, coords.max(dim=0).values), dim=1))
-    powers = torch.unique(power)
-    max_power = float(powers.max())
-    temperature_rise = float(temperature.max() - PROPERTIES.ambient_temperature)
+    bounds = np.stack((coords_np.min(axis=0), coords_np.max(axis=0)), axis=1)
+    domain = Domain(bounds=torch.as_tensor(bounds, dtype=dtype, device=device))
+    powers = torch.tensor(file_powers, dtype=dtype, device=device)
+    max_power = max(file_powers)
+    temperature_rise = float(temperature_np.max()) - PROPERTIES.ambient_temperature
 
-    generator = torch.Generator(device=device).manual_seed(args.seed)
-    permutation = torch.randperm(coords.size(0), generator=generator, device=device)
-    validation_size = int(args.val_fraction * coords.size(0))
+    # Two streams: the CPU one draws data batches and the split, the device one
+    # draws collocation and boundary points directly where the model lives.
+    generator = torch.Generator().manual_seed(args.seed)
+    device_generator = torch.Generator(device=device).manual_seed(args.seed)
+
+    # Validation is a fixed subsample. A full 10% of 276M points would make one
+    # `evaluate` pass cost more than the 250 training iterations between them,
+    # and the RMSE of a million points is already tight to a millikelvin.
+    validation_size = min(int(args.val_fraction * total_points), args.val_points)
+    permutation = torch.randperm(total_points, generator=generator)
     val_index, train_index = permutation[:validation_size], permutation[validation_size:]
 
-    train_coords, train_power, train_temperature = (
-        coords[train_index],
-        power[train_index],
-        temperature[train_index],
-    )
-    val_coords, val_power, val_temperature = (
-        coords[val_index],
-        power[val_index],
-        temperature[val_index],
-    )
+    val_coords = coords[val_index].to(device=device, dtype=dtype)
+    val_power = power[val_index].to(device=device, dtype=dtype)
+    val_temperature = temperature[val_index].to(device=device, dtype=dtype)
 
     model, architecture = build_model(domain, temperature_rise, max_power)
     model = model.to(device=device, dtype=dtype)
@@ -371,7 +429,7 @@ def main() -> None:
         f"[setup] scales temperature={scales.temperature:.4g} K "
         f"pde={scales.pde:.4g} W/m^3 flux={scales.flux:.4g} W/m^2"
     )
-    print(f"[setup] train={train_index.numel()} val={val_index.numel()}")
+    print(f"[setup] train={train_index.numel()} val={val_index.numel()} (of {total_points})")
 
     best_rmse = math.inf
     progress = tqdm(
@@ -388,13 +446,13 @@ def main() -> None:
         total, components = criterion(
             model,
             data=sample_data(
-                train_coords, train_power, train_temperature, args.batch_data, generator
+                coords, power, temperature, train_index, args.batch_data, generator, device
             ),
-            collocation=sample_collocation(domain, powers, args.batch_physics, generator),
-            bottom=sample_bottom(domain, powers, args.batch_boundary, generator),
-            top=sample_top(domain, powers, args.batch_boundary, generator),
-            surrounding=sample_surrounding(domain, powers, args.batch_boundary, generator),
-            initial=sample_initial(domain, powers, args.batch_boundary, generator),
+            collocation=sample_collocation(domain, powers, args.batch_physics, device_generator),
+            bottom=sample_bottom(domain, powers, args.batch_boundary, device_generator),
+            top=sample_top(domain, powers, args.batch_boundary, device_generator),
+            surrounding=sample_surrounding(domain, powers, args.batch_boundary, device_generator),
+            initial=sample_initial(domain, powers, args.batch_boundary, device_generator),
         )
         total.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

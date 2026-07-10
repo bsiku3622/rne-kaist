@@ -31,11 +31,18 @@ conversion. Everything inside the code is SI (metres, seconds, Kelvin); the raw
 | `scanline.py` | Temperature profile along the scan line, `T` against `x` |
 
 `data/` holds `data_<power>W.npy`, each an `[N, 6]` array of `(x, y, z, t, P, T)`
-rows on a structured grid (`81 x 21 x 13 x 31` for a 500 W file). Power is
-constant within a file, so the branch network only has something to learn once
-several powers are present. All `.npy` files under `--data-dir` are globbed and
-concatenated automatically. Regenerate them from the `simulation` repo — they are
-git-ignored, as are `runs/`, `figures/`, `archive/` and the checkpoints.
+rows on a structured grid — `321 x 81 x 49 x 31 = 39,495,519` rows per file at a
+0.125 mm spacing over a 40 x 10 x 6 mm block, 0 to 3 s. Power is constant within
+a file, so the branch network only has something to learn once several powers are
+present. All `.npy` files under `--data-dir` are globbed and concatenated
+automatically; the seven shipped powers (100 W to 250 W) come to 276M points.
+Regenerate them from the `simulation` repo — they are git-ignored, as are `runs/`,
+`figures/`, `archive/` and the checkpoints.
+
+The dataset is memory-mapped, converted to float32 once, and left in CPU memory
+(6.6 GB); each iteration moves only its sampled batch to the GPU. Validation is a
+fixed subsample capped by `--val-points` (default 1M), because a full `--val-fraction`
+pass over 27M points costs more than the training iterations between two of them.
 
 ## Setup
 
