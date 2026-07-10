@@ -3,9 +3,11 @@
 Copies the checkpoint, the TensorBoard run, the data it was trained on, any
 figures already rendered from it, and the exact code that produced it into
 ``archive/<run>_<N>powers/``, then locks every file read-only and clears the
-root (``runs/<run>``, ``checkpoint.pt``, ``train.log``, ``train.err``,
-``.train.pid``, ``figures/*.png``). ``data/`` itself is left alone -- it is
-the live working dataset, not part of any one run.
+root (every subdirectory under ``runs/`` -- not just ``<run>`` -- plus
+``checkpoint.pt``, ``train.log``, ``train.err``, ``.train.pid``,
+``figures/*.png``). ``runs/`` itself is kept (TensorBoard needs the directory
+to exist) and ``data/`` is left alone -- it is the live working dataset, not
+part of any one run.
 
 The code files (``calibrate.py``, ``loss.py``, ``model.py``, ``train.py``,
 ``visualize.py``) land directly in the entry, alongside ``checkpoint.pt`` and
@@ -89,7 +91,9 @@ def main() -> None:
     lock(entry)
     print(f"[archive] {entry}")
 
-    shutil.rmtree(run_dir)
+    for child in args.logdir.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
     for name in ROOT_CLEANUP:
         path = Path(name)
         if path.is_file():
