@@ -33,8 +33,10 @@ import torch
 from matplotlib.figure import Figure
 
 from calibrate import load_grid, Grid
-from model import DeepONeuralNet
+from model import DeepONeuralNet, PlainNeuralNet
 from train import BEAM_RADIUS, PROPERTIES
+
+MODEL_CLASSES = {"DeepONeuralNet": DeepONeuralNet, "PlainNeuralNet": PlainNeuralNet}
 
 MM = 1.0e-3
 
@@ -62,7 +64,7 @@ def find_grid(data_dir: Path, power: float) -> Grid:
 
 def load_model(
     checkpoint_path: Path, device: torch.device
-) -> tuple[DeepONeuralNet, dict]:
+) -> tuple[DeepONeuralNet | PlainNeuralNet, dict]:
     """Rebuild the network from the architecture stored alongside the weights."""
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     architecture = checkpoint.get("architecture")
@@ -71,7 +73,8 @@ def load_model(
             f"{checkpoint_path} predates the `architecture` key; retrain or add it by hand"
         )
 
-    model = DeepONeuralNet(**architecture)
+    model_class = MODEL_CLASSES[checkpoint.get("model_class", "DeepONeuralNet")]
+    model = model_class(**architecture)
     model.load_state_dict(checkpoint["model"])  # normalisation buffers ride along
     model.to(device).eval()
     return model, checkpoint

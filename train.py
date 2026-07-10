@@ -25,7 +25,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from loss import LossWeights, PINNLoss, PointSet, ResidualScales, ThermalProperties
-from model import DeepONeuralNet
+from model import DeepONeuralNet, PlainNeuralNet
 
 MM = 1.0e-3
 
@@ -276,24 +276,38 @@ def evaluate(
     return math.sqrt(squared_error / coords.size(0)), worst
 
 
+# Width of PlainNeuralNet's four hidden layers, chosen so its parameter count
+# (133134) lands within 0.01% of DeepONeuralNet's (133121) -- the two
+# architectures are meant to be compared at matched capacity, not just
+# matched depth.
+PLAIN_MLP_WIDTH = 209
+
+
 def build_model(
-    domain: Domain, temperature_rise: float, max_power: float
-) -> tuple[DeepONeuralNet, dict]:
+    domain: Domain, temperature_rise: float, max_power: float, architecture_name: str
+) -> tuple[DeepONeuralNet | PlainNeuralNet, dict]:
     """Instantiate the network with normalisation baked in from the data statistics.
 
     The keyword dict is returned alongside so it can be stored in the checkpoint;
     `visualize.py` rebuilds the network from it without re-reading the dataset.
     """
-    architecture = dict(
+    common = dict(
         branch_input_dim=1,
-        hidden_layers=(128, 128, 128, 128),
-        latent_dim=128,
         coord_mean=domain.center.tolist(),
         coord_scale=domain.half_width.tolist(),
         branch_mean=[0.0],
         branch_scale=[max_power],
         temperature_offset=PROPERTIES.ambient_temperature,
         temperature_scale=temperature_rise,
+    )
+    if architecture_name == "mlp":
+        architecture = dict(**common, hidden_layers=(PLAIN_MLP_WIDTH,) * 4)
+        return PlainNeuralNet(**architecture), architecture
+
+    architecture = dict(
+        **common,
+        hidden_layers=(128, 128, 128, 128),
+        latent_dim=128,
         laser_beam_radius=BEAM_RADIUS,
         laser_start_x=LASER_START_X,
         laser_y=LASER_Y,
@@ -320,6 +334,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--logdir", type=Path, default=Path("runs"), help="TensorBoard output")
     parser.add_argument("--run-name", type=str, default=None, help="subdirectory under --logdir")
     parser.add_argument("--no-progress", action="store_true", help="disable the tqdm bar")
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        choices=("deeponet", "mlp"),
+        default="deeponet",
+        help="deeponet: branch/trunk DeepONet plus the gaussian trunk feature. "
+        "mlp: a single MLP over (x, y, z, t, P), no branch/trunk split, matched parameter count.",
+    )
     parser.add_argument("--w-data", type=float, default=1.0)
     parser.add_argument("--w-pde", type=float, default=1.0)
     parser.add_argument("--w-bc", type=float, default=1.0)
@@ -358,7 +380,7 @@ def main() -> None:
     val_power = power[val_index].to(device)
     val_temperature = temperature[val_index].to(device)
 
-    model, architecture = build_model(domain, temperature_rise, max_power)
+    model, architecture = build_model(domain, temperature_rise, max_power, args.architecture)
     model = model.to(device=device, dtype=dtype)
     scales = ResidualScales.characteristic(
         properties=PROPERTIES,
@@ -443,6 +465,7 @@ def main() -> None:
                     {
                         "iteration": iteration,
                         "model": model.state_dict(),
+                        "model_class": type(model).__name__,
                         "architecture": architecture,
                         "val_rmse": rmse,
                         "properties": PROPERTIES,

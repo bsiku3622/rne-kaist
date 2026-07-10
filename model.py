@@ -198,7 +198,68 @@ class FieldDerivatives:
         return self.T_xx + self.T_yy + self.T_zz
 
 
-class DeepONeuralNet(nn.Module):
+class _DifferentiableTemperatureField(nn.Module):
+    """Shared autograd machinery for models predicting ``T(coords; laser_power)``.
+
+    Subclasses implement ``forward(laser_power, coords) -> T`` over the
+    physical ``(x, y, z, t)`` coordinates; this base class differentiates that
+    prediction for the PDE residual.
+    """
+
+    physical_dim = 4  # (x, y, z, t)
+
+    def derivatives(
+        self,
+        laser_power: Tensor,
+        coords: Tensor,
+        second_order: bool = True,
+    ) -> FieldDerivatives:
+        """Evaluate the network and differentiate it w.r.t. ``coords``.
+
+        ``coords`` must carry ``requires_grad=True``. The graph is retained
+        (``create_graph=True``) so the residuals built from these derivatives
+        remain differentiable w.r.t. the network parameters.
+        """
+        if not coords.requires_grad:
+            raise ValueError(
+                "coords must have requires_grad=True to differentiate through the trunk input"
+            )
+
+        temperature = self(laser_power, coords)
+        first = torch.autograd.grad(
+            temperature,
+            coords,
+            grad_outputs=torch.ones_like(temperature),
+            create_graph=True,
+        )[0]
+        T_x, T_y, T_z, T_t = (first[:, i : i + 1] for i in range(self.physical_dim))
+
+        if not second_order:
+            return FieldDerivatives(T=temperature, T_x=T_x, T_y=T_y, T_z=T_z, T_t=T_t)
+
+        second = []
+        for axis, gradient in enumerate((T_x, T_y, T_z)):
+            row = torch.autograd.grad(
+                gradient,
+                coords,
+                grad_outputs=torch.ones_like(gradient),
+                create_graph=True,
+            )[0]
+            second.append(row[:, axis : axis + 1])
+
+        return FieldDerivatives(
+            T=temperature,
+            T_x=T_x,
+            T_y=T_y,
+            T_z=T_z,
+            T_t=T_t,
+            T_xx=second[0],
+            T_yy=second[1],
+            T_zz=second[2],
+        )
+
+
+class DeepONeuralNet(_DifferentiableTemperatureField):
     """Physics-informed DeepONet for a transient 3-D temperature field.
 
     The branch network encodes the laser process parameter(s) ``P`` and the
@@ -223,8 +284,7 @@ class DeepONeuralNet(nn.Module):
     dimensionally correct without any manual rescaling.
     """
 
-    physical_dim = 4  # (x, y, z, t)
-    trunk_input_dim = physical_dim + 1  # + laser-proximity feature
+    trunk_input_dim = _DifferentiableTemperatureField.physical_dim + 1  # + laser-proximity feature
 
     # Declared so type checkers see `Tensor` rather than `Tensor | Module`, which
     # is what `nn.Module.__getattr__` is annotated to return for buffers.
@@ -320,52 +380,85 @@ class DeepONeuralNet(nn.Module):
         latent = self.operator(normalised_power, trunk_input)
         return self.temperature_offset + self.temperature_scale * latent
 
-    def derivatives(
-        self,
-        laser_power: Tensor,
-        coords: Tensor,
-        second_order: bool = True,
-    ) -> FieldDerivatives:
-        """Evaluate the network and differentiate it w.r.t. ``coords``.
 
-        ``coords`` must carry ``requires_grad=True``. The graph is retained
-        (``create_graph=True``) so the residuals built from these derivatives
-        remain differentiable w.r.t. the network parameters.
+class PlainNeuralNet(_DifferentiableTemperatureField):
+    """A single MLP over the raw ``(x, y, z, t, P)`` input -- no branch/trunk
+    split, no inner product, no engineered features.
+
+    A companion to :class:`DeepONeuralNet` at roughly the same parameter
+    count, for testing whether the operator's branch/trunk factorisation (and
+    the gaussian trunk feature) actually earns its keep here, or whether one
+    MLP over all five raw inputs does comparably.
+    """
+
+    coord_mean: Tensor
+    coord_scale: Tensor
+    branch_mean: Tensor
+    branch_scale: Tensor
+    temperature_offset: Tensor
+    temperature_scale: Tensor
+
+    def __init__(
+        self,
+        branch_input_dim: int = 1,
+        hidden_layers: Sequence[int] | None = (209, 209, 209, 209),
+        activation: type[nn.Module] = nn.Tanh,
+        dropout: float = 0.0,
+        coord_mean: Sequence[float] | None = None,
+        coord_scale: Sequence[float] | None = None,
+        branch_mean: Sequence[float] | None = None,
+        branch_scale: Sequence[float] | None = None,
+        temperature_offset: float = 0.0,
+        temperature_scale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.branch_input_dim = branch_input_dim
+        self.network = MLP(
+            self.physical_dim + branch_input_dim,
+            hidden_layers,
+            output_dim=1,
+            activation=activation,
+            dropout=dropout,
+        )
+
+        self.register_buffer(
+            "coord_mean", _normalisation_buffer(coord_mean, self.physical_dim, 0.0)
+        )
+        self.register_buffer(
+            "coord_scale", _normalisation_buffer(coord_scale, self.physical_dim, 1.0)
+        )
+        self.register_buffer(
+            "branch_mean", _normalisation_buffer(branch_mean, branch_input_dim, 0.0)
+        )
+        self.register_buffer(
+            "branch_scale", _normalisation_buffer(branch_scale, branch_input_dim, 1.0)
+        )
+        if temperature_scale == 0.0:
+            raise ValueError("temperature_scale must be non-zero")
+        self.register_buffer("temperature_offset", torch.tensor(float(temperature_offset)))
+        self.register_buffer("temperature_scale", torch.tensor(float(temperature_scale)))
+
+    def forward(self, laser_power: Tensor, coords: Tensor) -> Tensor:
+        """Predict temperature at ``coords`` for the process parameters ``laser_power``.
+
+        Same signature and broadcasting rules as :meth:`DeepONeuralNet.forward`.
         """
-        if not coords.requires_grad:
+        if coords.dim() != 2 or coords.size(-1) != self.physical_dim:
             raise ValueError(
-                "coords must have requires_grad=True to differentiate through the trunk input"
+                f"coords must have shape [batch, {self.physical_dim}] for (x, y, z, t), "
+                f"got {tuple(coords.shape)}"
             )
 
-        temperature = self(laser_power, coords)
-        first = torch.autograd.grad(
-            temperature,
-            coords,
-            grad_outputs=torch.ones_like(temperature),
-            create_graph=True,
-        )[0]
-        T_x, T_y, T_z, T_t = (first[:, i : i + 1] for i in range(self.physical_dim))
+        normalised_coords = (coords - self.coord_mean) / self.coord_scale
+        normalised_power = (laser_power - self.branch_mean) / self.branch_scale
+        if normalised_power.size(0) != normalised_coords.size(0):
+            if normalised_power.size(0) != 1:
+                raise ValueError(
+                    "laser_power and coords must have the same batch size, "
+                    "or laser_power must have batch size 1"
+                )
+            normalised_power = normalised_power.expand(normalised_coords.size(0), -1)
 
-        if not second_order:
-            return FieldDerivatives(T=temperature, T_x=T_x, T_y=T_y, T_z=T_z, T_t=T_t)
-
-        second = []
-        for axis, gradient in enumerate((T_x, T_y, T_z)):
-            row = torch.autograd.grad(
-                gradient,
-                coords,
-                grad_outputs=torch.ones_like(gradient),
-                create_graph=True,
-            )[0]
-            second.append(row[:, axis : axis + 1])
-
-        return FieldDerivatives(
-            T=temperature,
-            T_x=T_x,
-            T_y=T_y,
-            T_z=T_z,
-            T_t=T_t,
-            T_xx=second[0],
-            T_yy=second[1],
-            T_zz=second[2],
-        )
+        network_input = torch.cat([normalised_coords, normalised_power], dim=-1)
+        output = self.network(network_input)
+        return self.temperature_offset + self.temperature_scale * output
