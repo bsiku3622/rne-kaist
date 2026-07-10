@@ -27,22 +27,17 @@ conversion. Everything inside the code is SI (metres, seconds, Kelvin); the raw
 | `loss.py` | `ThermalProperties`, `ResidualScales`, `LossWeights`, `PINNLoss` |
 | `train.py` | Training loop, point sampling, TensorBoard logging, checkpointing |
 | `calibrate.py` | Fits the PDE and laser constants from the data; prints a block to paste into `train.py` |
-| `visualize.py` | Truth / prediction / error panels on the `top` or `track` slice |
-| `scanline.py` | Temperature profile along the scan line, `T` against `x` |
+| `visualize.py` | Truth / prediction / error panels on the `top` or `track` slice, or a `scanline` profile through the melt pool peak |
 
 `data/` holds `data_<power>W.npy`, each an `[N, 6]` array of `(x, y, z, t, P, T)`
-rows on a structured grid — `321 x 81 x 49 x 31 = 39,495,519` rows per file at a
-0.125 mm spacing over a 40 x 10 x 6 mm block, 0 to 3 s. Power is constant within
+rows on a structured grid — `81 x 21 x 13 x 31 = 685,503` rows per file at a
+0.5 mm spacing over a 40 x 10 x 6 mm block, 0 to 3 s. Power is constant within
 a file, so the branch network only has something to learn once several powers are
 present. All `.npy` files under `--data-dir` are globbed and concatenated
-automatically; the seven shipped powers (100 W to 250 W) come to 276M points.
-Regenerate them from the `simulation` repo — they are git-ignored, as are `runs/`,
-`figures/`, `archive/` and the checkpoints.
-
-The dataset is memory-mapped, converted to float32 once, and left in CPU memory
-(6.6 GB); each iteration moves only its sampled batch to the GPU. Validation is a
-fixed subsample capped by `--val-points` (default 1M), because a full `--val-fraction`
-pass over 27M points costs more than the training iterations between two of them.
+automatically; the seven shipped powers (100 W to 250 W) come to 4.8M points, so
+the whole dataset loads onto the GPU at once. Regenerate them from the `simulation`
+repo — they are git-ignored, as are `runs/`, `figures/`, `archive/` and the
+checkpoints.
 
 ## Setup
 
@@ -79,14 +74,16 @@ network without re-reading the dataset. Loss weights are `--w-data`, `--w-pde`,
 Then look at the result:
 
 ```powershell
-python visualize.py --power 500 --plane top
-python visualize.py --power 700 --plane track --times 0.5 1.5 2.5
-python scanline.py --power 300 --times 0.0 0.5 1.5 2.5
+python visualize.py --power 200 --plane top
+python visualize.py --power 200 --plane track --times 0.5 1.5 2.5
+python visualize.py --power 200 --plane scanline --gaussian
 ```
 
 `--plane top` shows the `z = z_max` surface the laser scans; `--plane track` cuts
 along the scan line at `y = y_c`, which is where the melt pool depth lives and
-where the model is hardest to fit.
+where the model is hardest to fit; `--plane scanline` pulls a single line out of
+that surface along the scan track and, with `--gaussian`, overlays a `1/e^2` fit
+so the melt pool's peak height and width can be read off directly.
 
 ## Monitoring server
 
