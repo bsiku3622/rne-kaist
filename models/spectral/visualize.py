@@ -50,8 +50,9 @@ def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, ve
     floor = reconstruct(coef[test_p], meta)
     mine = reconstruct(pred[test_p], meta)
 
-    # above this mode the snapshot interval cannot resolve the coefficient's own
-    # spin, so the sampled time series is aliased and the model cannot learn it
+    # where the raw coefficient series starts aliasing -- the reason the spin is
+    # divided out analytically rather than left for the network to find. It is not a
+    # ceiling on what can be learned; see share/plotting.signal.
     Lx = run.shape[1] * run.spacing
     nyquist = 0.5 / (run.snap_dt * vel / Lx)
 
