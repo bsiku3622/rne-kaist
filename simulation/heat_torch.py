@@ -135,7 +135,15 @@ def solve(
     snap_every = max(1, int(round(snap_dt / dt)))
     dx = dy = dz = ele
 
-    snaps_T, snaps_t = [T.clone()], [0.0]
+    # Snapshots live on the host, in a buffer allocated once. Keeping them on the
+    # device and stacking at the end needs twice their size in VRAM, which a
+    # 3 s run at snap_dt = 0.03 (101 snapshots, 7.2 GB) does not have. Copying each
+    # one across as it is taken costs a few milliseconds a snapshot and nothing else.
+    nsnaps = nsteps // snap_every + 1
+    snaps_T = torch.empty((B, nsnaps, nx, ny, nz), dtype=dtype)  # CPU
+    snaps_t = torch.zeros(nsnaps, dtype=dtype)
+    snaps_T[:, 0] = T.cpu()
+    si = 1
     t0 = time.time()
 
     for n in range(nsteps):
@@ -152,9 +160,10 @@ def solve(
         T = T + 0.5 * dt * (k1 + k2)
         T[:, :, :, 0] = T_AMB  # Dirichlet bottom
 
-        if (n + 1) % snap_every == 0:
-            snaps_T.append(T.clone())
-            snaps_t.append((n + 1) * dt)
+        if (n + 1) % snap_every == 0 and si < nsnaps:
+            snaps_T[:, si] = T.cpu()
+            snaps_t[si] = (n + 1) * dt
+            si += 1
             if progress:
                 el = time.time() - t0
                 done = (n + 1) / nsteps
@@ -168,24 +177,35 @@ def solve(
     if progress:
         print()
 
-    return x, y, z, torch.tensor(snaps_t, dtype=dtype), torch.stack(snaps_T, 1)
+    return x, y, z, snaps_t, snaps_T
 
 
-def to_rows(x, y, z, ts, Tsnap, power):
-    """[x, y, z, t, P, T] rows for one power, matching the FEM npy layout."""
+def write_rows(path, x, y, z, ts, Tsnap, power):
+    """Write ``[x, y, z, t, P, T]`` rows for one power, straight to the .npy.
+
+    Built through a memmap rather than in memory: the array is 6.2 GB per power at
+    101 snapshots on the fine grid, and materialising it and then handing it to
+    ``np.save`` would need that twice over.
+    """
     nx, ny, nz = len(x), len(y), len(z)
-    X, Y, Z = torch.meshgrid(x, y, z, indexing="ij")
-    coords = torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], 1)  # (N,3)
-    N = coords.shape[0]
-    out = []
+    N, nt = nx * ny * nz, len(ts)
+
+    X, Y, Z = torch.meshgrid(x.cpu(), y.cpu(), z.cpu(), indexing="ij")
+    coords = torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], 1).numpy()
+
+    out = np.lib.format.open_memmap(
+        path, mode="w+", dtype=np.float64, shape=(nt * N, 6)
+    )
     for j, t in enumerate(ts):
-        blk = torch.empty((N, 6), dtype=coords.dtype)
-        blk[:, 0:3] = coords.cpu()
-        blk[:, 3] = t
-        blk[:, 4] = power
-        blk[:, 5] = Tsnap[j].reshape(-1).cpu()
-        out.append(blk)
-    return torch.cat(out, 0).numpy()
+        block = out[j * N : (j + 1) * N]
+        block[:, 0:3] = coords
+        block[:, 3] = float(t)
+        block[:, 4] = power
+        block[:, 5] = Tsnap[j].reshape(-1).numpy()
+    out.flush()
+    lo, hi = float(out[:, 5].min()), float(out[:, 5].max())
+    del out
+    return (nt * N, 6), lo, hi
 
 
 if __name__ == "__main__":
@@ -251,13 +271,9 @@ if __name__ == "__main__":
     outdir.mkdir(parents=True, exist_ok=True)
 
     for b, P in enumerate(a.powers):
-        rows = to_rows(x, y, z, ts, Tsnap[b], P)
         out = outdir / f"data_{int(P)}W.npy"
-        np.save(out, rows)
-        print(
-            f"saved {out.name}  shape={rows.shape}  "
-            f"T=[{rows[:,5].min():.1f}, {rows[:,5].max():.1f}] K"
-        )
+        shape, lo, hi = write_rows(out, x, y, z, ts, Tsnap[b], P)
+        print(f"saved {out.name}  shape={shape}  T=[{lo:.1f}, {hi:.1f}] K")
 
     # Every number needed to reproduce this run, next to the bytes it produced.
     # Without it the only record of which parameters made which dataset was a log

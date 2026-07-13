@@ -10,13 +10,24 @@ the grid.
 
 **De-rotation.** A source moving at ``v`` makes the field roughly ``f(x - v t)``,
 whose transform is ``g(kx) * exp(-2i pi kx v t)``: every coefficient spins in the
-complex plane, and the faster the mode, the faster it spins. At ``|mx| = 21`` that
-spin already passes the Nyquist rate of a 0.1 s snapshot interval. Below that, the
-network is being asked to fit a target that oscillates 15-30 times over the run,
-which a smooth MLP cannot do -- so the peak came out 17% low. Undoing the spin
-analytically, which is a change to the frame that travels with the laser, leaves an
-amplitude that barely moves in time, and the same network lands at 1.3%. It is an
-exact, invertible multiplication, so nothing is lost.
+complex plane, and the faster the mode, the faster it spins. Over a 3 s run the
+energetic modes turn 15-30 times, and an MLP cannot fit a target that oscillates
+like that -- left alone, it put the peak 17% low. Undoing the spin analytically,
+which is a change to the frame that travels with the laser, leaves an amplitude that
+barely moves in time, and the same network lands at 1.3%. It is an exact, invertible
+multiplication, so nothing is lost.
+
+The phase is evaluated at the exact snapshot times, so **the snapshot interval does
+not have to resolve the spin.** A dataset whose raw coefficients alias above
+``|mx| = 5`` still learns every mode out to 38. That is worth stating because the
+opposite is easy to assume: aliasing stops you *inferring* a frequency from samples,
+and here the frequency is not inferred, it is known.
+
+What does defeat de-rotation is a mode that is not travelling. Above ``|mx| ~ 30`` the
+spectrum is dominated by the x-wrap discontinuity -- the 41 K step the DFT sees
+between the far end of the plate and the near one -- which is pinned to the domain,
+not to the laser. Multiplying that by a spin *adds* an oscillation instead of
+removing one, and the fix for it is to detrend x, not to sample time more finely.
 """
 
 from __future__ import annotations

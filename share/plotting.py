@@ -143,10 +143,18 @@ def scanline(
 def signal(true_c, pred_c, mx, power, out: Path, nyquist: float | None = None) -> None:
     """The Fourier coefficients themselves: which modes the model got, and which it lost.
 
-    ``nyquist`` marks the mode above which the snapshot interval cannot resolve the
-    coefficient's own oscillation. A moving source spins every coefficient at
-    ``kx * v``, so past that mark the sampled time series is aliased and no amount
-    of training recovers what the sampling threw away.
+    ``nyquist`` marks where the *raw* coefficient time series becomes aliased: a
+    moving source spins every coefficient at ``kx * v``, and past this mode that spin
+    is faster than the snapshot interval can sample. It is why the spin has to be
+    divided out analytically rather than left for the network to discover.
+
+    It is **not** a ceiling on what can be learned, and the line should not be read as
+    one. De-rotation evaluates the phase at the exact sample times, so it does not have
+    to infer anything from the samples and the aliasing costs it nothing: a run with
+    this mark at |mx| = 5 learns every mode out to 38 with under 14% error. Where the
+    high modes *do* fail, the cause is that they belong to the stationary x-wrap
+    artefact rather than to the travelling pool, and de-rotating those injects a spin
+    instead of removing one.
     """
     j = -1
     ct, cp = true_c[j], pred_c[j]
@@ -191,7 +199,9 @@ def signal(true_c, pred_c, mx, power, out: Path, nyquist: float | None = None) -
     ax2.text(1, 1.25, "error as big as the mode itself", color=PREDICTION, fontsize=7.5)
     if nyquist is not None:
         ax2.axvline(nyquist, color="0.4", lw=1.2, ls=":")
-        ax2.text(nyquist + 1, 0.02, f"temporal Nyquist\n|mx| = {nyquist:.0f}",
+        ax2.text(nyquist + 1, 0.02,
+                 f"raw series aliased above |mx| = {nyquist:.0f}\n"
+                 "(not a ceiling: de-rotation is analytic)",
                  color="0.35", fontsize=7.5)
     ax2.set_xlabel("|mx|")
     ax2.set_ylabel("relative L2 error of the mode")
