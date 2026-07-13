@@ -32,77 +32,30 @@ error come free from Parseval; peak error, worst pointwise error and the
 Dirichlet violation at the bottom face need an actual reconstruction, so those are
 measured only for the chosen boxes.
 
+The npz lands next to the data it came from, as ``data/<run>/spectral_fft2.npz``;
+the figures land in ``reports/spectral-<run>/``, because they are what justifies
+the mode budget and ``data/`` is not tracked.
+
 Example::
 
-    python spectral.py --data-dir ../simulation/data/20260710_132221_powersweep_gpu
+    python models/spectral/dataset.py --run data/20260710_132221_powersweep_gpu
 """
 
 from __future__ import annotations
 
 import argparse
-import re
-from dataclasses import dataclass
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.fft import dctn, idctn
 
-T_AMB = 298.0
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from share.grid import T_AMB, Run, load_run
+
 VARIANTS = ("fft3", "fft2", "dct")
-
-
-# --------------------------------------------------------------------------- #
-# loading
-# --------------------------------------------------------------------------- #
-
-
-@dataclass
-class Run:
-    """One power sweep, reshaped back onto the grid it was written from."""
-
-    powers: np.ndarray  # (nP,)
-    files: list[Path]
-    x: np.ndarray
-    y: np.ndarray
-    z: np.ndarray
-    t: np.ndarray
-
-    @property
-    def shape(self) -> tuple[int, int, int, int]:
-        return len(self.t), len(self.x), len(self.y), len(self.z)
-
-    def field(self, i: int) -> np.ndarray:
-        """dT = T - T_amb for power ``i``, as (nt, nx, ny, nz)."""
-        rows = np.load(self.files[i], mmap_mode="r")
-        dT = np.asarray(rows[:, 5], dtype=np.float64) - T_AMB
-        return dT.reshape(self.shape)
-
-
-def load_run(data_dir: Path) -> Run:
-    files = sorted(
-        data_dir.glob("data_*W.npy"),
-        key=lambda p: int(re.search(r"data_(\d+)W", p.name).group(1)),
-    )
-    if not files:
-        raise SystemExit(f"no data_*W.npy under {data_dir}")
-    powers = np.array([int(re.search(r"data_(\d+)W", p.name).group(1)) for p in files])
-
-    rows = np.load(files[0], mmap_mode="r")
-    x, y, z, t = (np.unique(np.asarray(rows[:, c])) for c in range(4))
-    nt, nx, ny, nz = len(t), len(x), len(y), len(z)
-    if nt * nx * ny * nz != rows.shape[0]:
-        raise SystemExit("rows do not fill a (nt, nx, ny, nz) grid")
-
-    # to_rows() writes t outermost, then meshgrid(x, y, z, indexing="ij"). Trust
-    # that only after it reproduces the coordinate columns it claims to.
-    for col, axis in enumerate((x, y, z)):
-        got = np.asarray(rows[:, col]).reshape(nt, nx, ny, nz)
-        want = axis.reshape([-1 if a == col + 1 else 1 for a in range(4)])
-        if not np.array_equal(got, np.broadcast_to(want, got.shape)):
-            raise SystemExit(f"column {col} is not constant along the other axes")
-
-    return Run(powers=powers, files=files, x=x, y=y, z=z, t=t)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +155,7 @@ def accumulate(run: Run) -> dict:
     peak = np.zeros((nP, nt))
 
     for i, P in enumerate(run.powers):
-        dT = run.field(i)
+        dT = run.dT(i)
         peak[i] = dT.reshape(nt, -1).max(axis=1)
         snap_total[i] = (dT**2).reshape(nt, -1).sum(axis=1)
         total[i] = snap_total[i].sum()
@@ -213,7 +166,7 @@ def accumulate(run: Run) -> dict:
                 if v == "fft2":
                     snap[i, j] = s[:, :, 0]
         print(
-            f"  {P:3d} W  peak dT {peak[i].max():7.1f} K   "
+            f"  {int(P):3d} W  peak dT {peak[i].max():7.1f} K   "
             f"{100 * total[i] / total.sum():5.1f}% of the energy so far"
         )
 
@@ -314,7 +267,7 @@ def save_dataset(run: Run, box: dict, out: Path) -> None:
     coef = np.empty((len(run.powers), nt, len(mx), len(my), nz), dtype=np.complex64)
     rows = []
     for i, P in enumerate(run.powers):
-        dT = run.field(i)
+        dT = run.dT(i)
         C = np.fft.rfftn(dT, axes=(1, 2), norm="ortho")  # over (x, y), t stays
         coef[i] = C[:, mx, :, :][:, :, my, :]
 
@@ -582,14 +535,27 @@ def plot_pareto(run: Run, acc: dict, out: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
+REPO = Path(__file__).resolve().parents[2]
+NPZ = "spectral_fft2.npz"  # the name models/spectral/train.py looks for
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", type=Path, required=True)
-    ap.add_argument("--figdir", type=Path, default=Path("figures/spectral"))
+    ap.add_argument(
+        "--run", type=Path, required=True,
+        help="a solver run under data/, e.g. data/20260710_132221_powersweep_gpu",
+    )
+    ap.add_argument(
+        "--figdir", type=Path, default=None,
+        help="default: reports/spectral-<run>/  -- these justify the mode budget, "
+             "so they are kept where they can be read, not under the ignored data/",
+    )
     ap.add_argument(
         "--targets", type=float, nargs="+", default=[0.99, 0.999, 0.9999, 0.99999]
     )
-    ap.add_argument("--save", type=Path, help="write the fft2 dataset here (.npz)")
+    ap.add_argument(
+        "--no-save", action="store_true", help="analyse only; do not write the npz"
+    )
     ap.add_argument(
         "--save-target",
         type=float,
@@ -602,7 +568,10 @@ def main() -> None:
     )
     a = ap.parse_args()
 
-    run = load_run(a.data_dir)
+    run = load_run(a.run)
+    a.save = None if a.no_save else run.dir / NPZ
+    if a.figdir is None:
+        a.figdir = REPO / "reports" / f"spectral-{run.dir.name}"
     nt, nx, ny, nz = run.shape
     d = float(run.x[1] - run.x[0])
     print(
@@ -632,7 +601,7 @@ def main() -> None:
                 continue
             ip, it = hardest_snapshot(acc, b["kx"], b["ky"])
             if (ip, it) not in cache:
-                cache[(ip, it)] = run.field(ip)[it]
+                cache[(ip, it)] = run.dT(ip)[it]
             e = reconstruct_error(cache[(ip, it)], v, b)
             where = f"{run.powers[ip]}W t={run.t[it]:.1f}s"
             print(
@@ -653,8 +622,8 @@ def main() -> None:
     # radiation has not yet grown big enough to cap and broaden it
     lo, hi = 0, len(run.powers) - 1
     cases = [
-        (run.field(lo)[-1], f"{run.powers[lo]} W, t = {run.t[-1]:.1f} s"),
-        (run.field(hi)[-1], f"{run.powers[hi]} W, t = {run.t[-1]:.1f} s"),
+        (run.dT(lo)[-1], f"{run.powers[lo]} W, t = {run.t[-1]:.1f} s"),
+        (run.dT(hi)[-1], f"{run.powers[hi]} W, t = {run.t[-1]:.1f} s"),
     ]
 
     a.figdir.mkdir(parents=True, exist_ok=True)

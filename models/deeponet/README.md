@@ -52,7 +52,7 @@ pip install torch numpy scipy matplotlib tqdm tensorboard
 Fit the constants first, whenever the contents of `data/` change:
 
 ```powershell
-python calibrate.py --data-dir data
+python models/deeponet/calibrate.py --data-dir data/torch_20260713-151246_100_700_0.125
 ```
 
 It prints an `ABSORPTIVITY` / `BEAM_RADIUS` / `PROPERTIES` block; paste it over
@@ -63,13 +63,24 @@ the corresponding block at the top of `train.py`. Only the diffusivity ratio
 Then train:
 
 ```powershell
-python train.py --iterations 20000 --lr 1e-3 --logdir runs
+python models/deeponet/train.py --run data/torch_20260713-151246_100_700_0.125
 ```
 
-The best-validation-RMSE checkpoint is written to `checkpoint.pt` and carries the
-architecture, properties, scales and weights, so the plotting scripts rebuild the
-network without re-reading the dataset. Loss weights are `--w-data`, `--w-pde`,
-`--w-bc`, `--w-ic`; `--double` runs in float64.
+The run opens its own directory under `archive/` and writes everything into it as
+it goes — checkpoint, TensorBoard events, figures, a snapshot of this code, hard
+links to the data, and the provenance. There is no global `runs/` or
+`checkpoint.pt` any more, so two models can train at once and nothing has to be
+swept up afterwards. `tensorboard --logdir archive` sees every run.
+
+The best-validation-RMSE checkpoint carries the architecture, properties, scales
+and weights, so `visualize.py` rebuilds the network without re-reading the dataset.
+Loss weights are `--w-data`, `--w-pde`, `--w-bc`, `--w-ic`; `--double` runs in
+float64; `--tag` suffixes the archive entry.
+
+**Note what this model validates on.** `--val-fraction` holds out a random 10% of
+*points*, drawn from every power it trains on. `models/spectral` and `models/coord`
+hold out a whole power instead and never see it, which is a strictly harder test.
+The two sets of numbers are not comparable, and the difference is large.
 
 Then look at the result:
 
@@ -87,42 +98,6 @@ so the melt pool's peak height and width can be read off directly.
 
 ## Monitoring server
 
-Two long-running services are exposed over the VPN interface
-(`baeks-server-only-intranet`, `10.8.0.0/24`): TensorBoard for the training
-curves at `http://10.8.0.2:6006`, and a file server for browsing the project
-folder at `http://10.8.0.2:8080`.
-
-```powershell
-$root = "D:\School\KSA\RnE\rne-kaist\model-training"
-Set-Location $root
-
-$tb = Start-Process -FilePath "python" `
-  -ArgumentList "-m","tensorboard.main","--logdir","runs","--host","0.0.0.0","--port","6006" `
-  -RedirectStandardOutput "$root\tensorboard.log" -RedirectStandardError "$root\tensorboard.err" `
-  -WindowStyle Hidden -PassThru
-
-$fs = Start-Process -FilePath "python" `
-  -ArgumentList "-u","-m","http.server","8080","--bind","10.8.0.2","--directory","$root" `
-  -RedirectStandardOutput "$root\fileserver.log" -RedirectStandardError "$root\fileserver.err" `
-  -WindowStyle Hidden -PassThru
-
-"$($tb.Id)" | Out-File -Encoding utf8 "$root\.tensorboard.pid"
-"$($fs.Id)" | Out-File -Encoding utf8 "$root\.fileserver.pid"
-```
-
-`Start-Process` detaches the services from the shell — backgrounding them with
-`&` kills them when the session ends. Shut them down with:
-
-```powershell
-Stop-Process -Id (Get-Content "$root\.tensorboard.pid").Trim() -Force
-Stop-Process -Id (Get-Content "$root\.fileserver.pid").Trim() -Force
-```
-
-TensorBoard binds `0.0.0.0` because its default is localhost-only. The file
-server binds `10.8.0.2` on purpose: `0.0.0.0` would expose the whole folder to
-the public IP and the home LAN. Do not delete an empty `runs/` — it is the
-`--logdir` target and TensorBoard will not start without it.
-
-See [SERVER.md](SERVER.md) for the health checks, the nginx
-reverse-proxy config behind `desktop.baeksikoo.com`, the ACL on `archive/`, and
-the known constraints of the single-threaded `http.server`.
+Moved to `SERVER.md` at the repository root -- TensorBoard and the file server
+are machine-level services now, not this model's, and `--logdir` points at
+`archive/` so it sees every model's runs at once.

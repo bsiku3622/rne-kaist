@@ -23,11 +23,15 @@ the seven runs advance together.
 from __future__ import annotations
 
 import argparse
-import os
+import json
 import time
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import torch
+
+REPO = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------- geometry
 DOMAIN = (40.0, 10.0, 6.0)  # mm
@@ -199,7 +203,13 @@ if __name__ == "__main__":
     ap.add_argument("--h", type=float, default=2e-5)
     ap.add_argument("--eta", type=float, default=0.35)
     ap.add_argument("--emiss", type=float, default=0.40)
-    ap.add_argument("--outdir", type=str, default=None)
+    ap.add_argument(
+        "--outdir",
+        type=str,
+        default=None,
+        help="where to write; default data/torch_<stamp>_<minP>_<maxP>_<ele>[-<tag>]",
+    )
+    ap.add_argument("--tag", type=str, default=None, help="suffix on the run directory")
     ap.add_argument("--device", type=str, default="cuda")
     a = ap.parse_args()
 
@@ -209,6 +219,7 @@ if __name__ == "__main__":
         f"powers={[int(p) for p in a.powers]}"
     )
 
+    started = time.time()
     x, y, z, ts, Tsnap = solve(
         a.powers,
         a.ele_size,
@@ -228,13 +239,61 @@ if __name__ == "__main__":
         f"{len(ts)} snapshots"
     )
 
+    # The run directory is named the way archive/ entries are, so a dataset and the
+    # trainings fitted to it read the same: <who>_<stamp>_<minP>_<maxP>_<spacing>.
     if a.outdir:
-        os.makedirs(a.outdir, exist_ok=True)
-        for b, P in enumerate(a.powers):
-            rows = to_rows(x, y, z, ts, Tsnap[b], P)
-            out = f"{a.outdir}/data_{int(P)}W.npy"
-            np.save(out, rows)
-            print(
-                f"saved {out}  shape={rows.shape}  "
-                f"T=[{rows[:,5].min():.1f}, {rows[:,5].max():.1f}] K"
-            )
+        outdir = Path(a.outdir)
+    else:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        lo, hi = int(min(a.powers)), int(max(a.powers))
+        name = f"torch_{stamp}_{lo}_{hi}_{a.ele_size:g}"
+        outdir = REPO / "data" / (f"{name}-{a.tag}" if a.tag else name)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for b, P in enumerate(a.powers):
+        rows = to_rows(x, y, z, ts, Tsnap[b], P)
+        out = outdir / f"data_{int(P)}W.npy"
+        np.save(out, rows)
+        print(
+            f"saved {out.name}  shape={rows.shape}  "
+            f"T=[{rows[:,5].min():.1f}, {rows[:,5].max():.1f}] K"
+        )
+
+    # Every number needed to reproduce this run, next to the bytes it produced.
+    # Without it the only record of which parameters made which dataset was a log
+    # file somewhere else, which is no record at all.
+    (outdir / "config.json").write_text(
+        json.dumps(
+            {
+                "solver": "heat_torch.py",
+                "scheme": "7-point finite difference, Heun in time",
+                "wall_s": round(time.time() - started, 1),
+                "device": dev,
+                "powers_W": [float(p) for p in a.powers],
+                "grid": {"nx": len(x), "ny": len(y), "nz": len(z), "nt": len(ts)},
+                "ele_size_mm": a.ele_size,
+                "dt_s": a.dt,
+                "total_t_s": a.total_t,
+                "snap_dt_s": a.snap_dt,
+                "domain_mm": list(DOMAIN),
+                "beam": {
+                    "radius_mm": R_BEAM,
+                    "scan_speed_mm_s": VEL,
+                    "start_x_mm": X0,
+                    "y_mm": Y0,
+                },
+                "material": {
+                    "rho_g_mm3": a.rho,
+                    "Cp_J_gK": a.Cp,
+                    "k_W_mmK": a.k,
+                    "h_W_mm2K": a.h,
+                    "eta": a.eta,
+                    "emissivity": a.emiss,
+                },
+                "T_ambient_K": T_AMB,
+            },
+            indent=2,
+        )
+    )
+    print(f"\nwrote {outdir}/config.json")
+    print(f"     {outdir}")

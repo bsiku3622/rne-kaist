@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,11 @@ import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from share import archiving
+from share.grid import load_run
 from tqdm import tqdm
 
 from loss import LossWeights, PINNLoss, PointSet, ResidualScales, ThermalProperties
@@ -318,7 +325,11 @@ def build_model(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument(
+        "--run", type=Path, required=True, help="a solver run under data/"
+    )
+    parser.add_argument("--tag", type=str, default=None, help="suffix on the archive entry")
+    parser.add_argument("--lock", action="store_true", help="mark the archive entry read-only")
     parser.add_argument("--iterations", type=int, default=20000)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-data", type=int, default=4096)
@@ -330,9 +341,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--double", action="store_true", help="run in float64")
-    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoint.pt"))
-    parser.add_argument("--logdir", type=Path, default=Path("runs"), help="TensorBoard output")
-    parser.add_argument("--run-name", type=str, default=None, help="subdirectory under --logdir")
     parser.add_argument("--no-progress", action="store_true", help="disable the tqdm bar")
     parser.add_argument(
         "--architecture",
@@ -355,7 +363,8 @@ def main() -> None:
     torch.set_default_dtype(dtype)
     device = torch.device(args.device)
 
-    coords_np, power_np, temperature_np = load_dataset(sorted(args.data_dir.glob("*.npy")))
+    run = load_run(args.run)
+    coords_np, power_np, temperature_np = load_dataset(run.files)
 
     coords = torch.as_tensor(coords_np, dtype=dtype)
     power = torch.as_tensor(power_np, dtype=dtype)
@@ -394,11 +403,11 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.iterations)
 
-    run_name = args.run_name or time.strftime("%Y%m%d-%H%M%S")
-    writer = SummaryWriter(log_dir=str(args.logdir / run_name))
+    entry = archiving.open_entry("deeponet", run, args.tag or args.architecture)
+    writer = SummaryWriter(log_dir=str(entry.tensorboard))
 
     parameter_count = sum(p.numel() for p in model.parameters())
-    print(f"[setup] tensorboard run -> {args.logdir / run_name}")
+    print(f"[archive] {entry.dir.name}")
     print(f"[setup] device={device} dtype={dtype} params={parameter_count}")
     print(f"[setup] lower={domain.lower.tolist()} upper={domain.upper.tolist()}")
     print(f"[setup] powers={powers.tolist()} W  T_rise={temperature_rise:.1f} K")
@@ -408,6 +417,7 @@ def main() -> None:
     )
     print(f"[setup] train={train_index.numel()} val={val_index.numel()}")
 
+    started = time.time()
     best_rmse = math.inf
     progress = tqdm(
         range(1, args.iterations + 1),
@@ -472,7 +482,7 @@ def main() -> None:
                         "scales": scales,
                         "weights": weights,
                     },
-                    args.checkpoint,
+                    entry.checkpoint,
                 )
 
     progress.close()
@@ -491,8 +501,30 @@ def main() -> None:
         {"hparam/val_rmse": best_rmse},
     )
     writer.close()
-    print(f"[done] best val RMSE {best_rmse:.3f} K -> {args.checkpoint}")
-    print(f"[done] tensorboard --logdir {args.logdir}")
+    print(f"[done] best val RMSE {best_rmse:.3f} K")
+
+    # `visualize.py` owns the figure conventions for this model, so render through it
+    for plane, extra in (("top", []), ("track", []), ("scanline", ["--gaussian"])):
+        subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "visualize.py"),
+             "--checkpoint", str(entry.checkpoint), "--data-dir", str(run.dir),
+             "--power", str(int(run.powers[len(run.powers) // 2])), "--plane", plane,
+             "--out", str(entry.figures / f"{plane}.png"), *extra],
+            check=False,
+        )
+
+    archiving.finalise(
+        entry,
+        run,
+        config={**vars(args), "params": parameter_count, "architecture_dims": architecture},
+        metrics={
+            "wall_s": round(time.time() - started, 1),
+            "best_val_rmse_K": best_rmse,
+            "note": "validation is a random 10%% of points across every power, not a "
+                    "held-out power -- not comparable with models/spectral or models/coord",
+        },
+        lock=args.lock,
+    )
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ Stefan-Boltzmann constant is `5.6704e-14` W/(mm^2.K^4).
 
 ## Two solvers
 
-| | `src/heat_fenics.py` | `src/heat_torch.py` |
+| | `heat_fenics.py` | `heat_torch.py` |
 |---|---|---|
 | method | FEM, CG1 | finite difference, 7-point |
 | time | Crank-Nicolson (implicit) | Heun / RK2 (explicit) |
@@ -71,7 +71,7 @@ points at FEniCSx, which has a different API.
 ### GPU (recommended)
 
 ```bash
-python src/heat_torch.py \
+python heat_torch.py \
     --powers 100 125 150 175 200 225 250 \
     --ele_size 0.125 --dt 6.25e-4 \
     --outdir data/sweep
@@ -92,7 +92,7 @@ The solver asserts this on entry. Halving `ele_size` therefore means quartering
 ### CPU
 
 ```bash
-python src/heat_fenics.py --P 250 --y0 5.0 --ele_size 0.25 --dt 2.5e-3 \
+python heat_fenics.py --P 250 --y0 5.0 --ele_size 0.25 --dt 2.5e-3 \
     --rho 4.43e-3 --Cp 0.526 --k 0.0067 --eta 0.35 --emiss 0.40 \
     --outdir data/fem --tag _250W --no_vtk
 ```

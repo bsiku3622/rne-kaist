@@ -1,2 +1,57 @@
+# Solver output and everything derived from it -- tens of GB, and regenerating a
+# seven-power sweep takes about 20 s on a GPU. Each run directory carries the
+# config.json that reproduces it, so the bytes themselves are not worth tracking.
+data/
+
+# One directory per finished training run: checkpoint, logs, TensorBoard events,
+# a code snapshot, hard links to the data, and the figures. Written by
+# share/archiving.py, and far too large to track.
+archive/
+
+# Raw fields, checkpoints, and the ParaView files heat_fenics.py writes
+*.npy
+*.npz
+*.pt
+*.ckpt
+*.pvd
+*.vtu
+*.zip
+
+# Rendered media
+*.mp4
+*.gif
+frames/
+
+# Logs and daemon bookkeeping
+*.log
+*.err
+*.out
+*.pid
+.fileserver.pid
+.tensorboard.pid
+
+# Scratch markers written by the sweep drivers
+.hidir
+.outdir
+.gpudir
+
 # Transient mode flag written by the /discuss skill, in whatever directory it runs
 **/.claude/.mode
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# FEniCS JIT cache
+.cache/
+dijitso/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
