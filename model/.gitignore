@@ -1,0 +1,38 @@
+# Simulation grids -- 220 MB, regenerate from the `simulation` repo
+data/
+
+# Snapshots of previous runs: old data copies, checkpoints, figures
+archive/
+
+# Training output
+runs/
+figures/
+checkpoint*.pt
+*.pt
+*.ckpt
+
+# Raw fields
+*.npy
+*.npz
+
+# Logs and daemon bookkeeping
+*.log
+*.err
+*.out
+*.pid
+.fileserver.pid
+.tensorboard.pid
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
