@@ -93,7 +93,7 @@ curves at `http://10.8.0.2:6006`, and a file server for browsing the project
 folder at `http://10.8.0.2:8080`.
 
 ```powershell
-$root = "D:\0_Personal\Documents\School\KSA\RnE\model-training\v1\pi-deeponet"
+$root = "D:\School\KSA\RnE\rne-kaist\model"
 Set-Location $root
 
 $tb = Start-Process -FilePath "python" `
