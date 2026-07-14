@@ -52,8 +52,19 @@ def main(argv: list[str] | None = None) -> None:
     a = s.args
     domain, max_power = s.corpus.domain, s.corpus.max_power
 
-    sampler = CPiMLPDataset(s.train, s.generator, physics_power=a.physics_power)
-    input_mean, input_scale = normalisation(domain, max_power)
+    # The power the physics is pinned to. The corpus mean is the least arbitrary single
+    # choice available: it is the power whose field the data term, which averages over all
+    # of them, is closest to asking for.
+    if a.physics_power is None:
+        a.physics_power = float(s.corpus.powers.mean())
+
+    sampler = CPiMLPDataset(
+        s.train, s.generator,
+        physics_power=a.physics_power,
+        domain=domain,
+        gaussian_exponent_scale=a.gaussian_exponent_scale,
+    )
+    input_mean, input_scale = normalisation(domain)  # no P column to normalise: that is the point
     architecture = dict(
         hidden_layers=tuple(a.hidden),
         input_mean=input_mean,
@@ -61,6 +72,7 @@ def main(argv: list[str] | None = None) -> None:
         temperature_offset=PROPERTIES.ambient_temperature,
         temperature_scale=s.rise,
         gaussian_exponent_scale=a.gaussian_exponent_scale,
+        physics_power=a.physics_power,
     )
     model = s.to(ControlPhysicsMLP(**architecture))
 

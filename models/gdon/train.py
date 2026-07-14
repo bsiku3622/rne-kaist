@@ -38,6 +38,7 @@ def add_args(ap) -> None:
 def main(argv: list[str] | None = None) -> None:
     s = harness.prepare(NAME, __doc__, add_args, argv)
     a = s.args
+    domain, max_power = s.corpus.domain, s.corpus.max_power
 
     sampler = GDoNDataset(s.train, s.generator)
     architecture = dict(
@@ -57,8 +58,8 @@ def main(argv: list[str] | None = None) -> None:
     criterion = ScaledMSELoss(scale=s.rise)
 
     def step():
-        inputs, target = sampler.batch(a.batch_size)
-        loss = criterion(model(inputs), target)
+        power, coords, target = sampler.batch(a.batch_size)
+        loss = criterion(model(power, coords), target)
         return loss, {"data": loss.detach()}
 
     harness.go(NAME, s, model, architecture, GDoNAgent, step)
