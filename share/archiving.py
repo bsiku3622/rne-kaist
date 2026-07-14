@@ -79,42 +79,44 @@ def _name(model: str, run, tag: str | None, stamp: str) -> str:
 
 
 def live_link(entry: Entry) -> None:
-    """Point ``runs/<entry>`` at the entry's event files, for TensorBoard to watch.
+    """Give TensorBoard a ``runs/<entry>`` to watch while the run is still going.
 
-    The archive is a *record*; TensorBoard is a *monitor*, and pointing it straight
-    at ``archive/`` conflates the two -- every run ever made shows up in the sidebar,
-    and the one actually training is lost among them.
+    The archive is a *record*; TensorBoard is a *monitor*. Pointing ``--logdir`` straight
+    at ``archive/`` conflates the two -- every run ever made shows up in the sidebar and
+    the one actually training is lost among them -- so ``runs/`` holds only what is live,
+    and :func:`drop_live_link` empties it as each run finishes.
 
-    So the events stay inside the entry, where they belong, and ``runs/`` holds a
-    junction per run for TensorBoard to read. :func:`drop_live_link` takes it away
-    again when the run finishes, so what is listed is what is *running*. Point
-    ``--logdir archive`` when the whole history is what you want to compare.
+    **What is in ``runs/<entry>`` is a hard link, not a directory link.** A junction or a
+    symlink would be smaller and simpler, and it would also be a loaded gun: ``rm -rf``
+    follows a junction, and PowerShell's ``Remove-Item -Recurse`` follows both. Either one
+    aimed at ``runs/`` would walk through the link and delete the archive's event files --
+    the one thing this must never do, since ``runs/`` is meant to be swept freely.
+
+    A hard link cannot do that. It is a second *name* for the same bytes, not a pointer to
+    them, so deleting the name in ``runs/`` leaves the name in ``archive/`` holding the
+    data, whatever tool does the deleting. The run keeps appending through the archive's
+    name and TensorBoard sees every byte of it through ours: one inode, two doors.
+
+    Call this once the writer exists -- an event file has to be there before it can be
+    linked to.
     """
-    RUNS.mkdir(exist_ok=True)
-    link = RUNS / entry.dir.name
-    if link.exists():
-        return
-    # a junction, not a symlink: NTFS symlinks need administrator or developer mode,
-    # junctions do not, and for a directory they behave the same
-    subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link), str(entry.tensorboard)],
-        capture_output=True,
-        check=False,
-    )
+    live = RUNS / entry.dir.name
+    live.mkdir(parents=True, exist_ok=True)
+    for events in entry.tensorboard.iterdir():
+        if events.is_file() and not (live / events.name).exists():
+            os.link(events, live / events.name)
 
 
 def drop_live_link(entry: Entry) -> None:
-    """Take ``runs/<entry>`` away again, now that the run is no longer live.
+    """Empty ``runs/<entry>``, now that the run is a record rather than a monitor.
 
-    ``rmdir`` without ``/s`` unlinks the junction and leaves what it pointed at alone.
-    Deleting a junction with a tool that *follows* it -- ``rm -rf``, ``shutil.rmtree`` --
-    would walk into the archive entry and delete the events themselves, which is the one
-    thing this must not do.
+    Safe to do with anything, which is the whole point of linking the way :func:`live_link`
+    does: these are hard links, so unlinking them drops the names and leaves the archive's
+    own name holding the bytes.
     """
-    link = RUNS / entry.dir.name
-    if not link.exists():
-        return
-    subprocess.run(["cmd", "/c", "rmdir", str(link)], capture_output=True, check=False)
+    live = RUNS / entry.dir.name
+    if live.exists():
+        shutil.rmtree(live, ignore_errors=True)
 
 
 def open_entry(model: str, run, tag: str | None = None, root: Path = ARCHIVE) -> Entry:
@@ -125,8 +127,7 @@ def open_entry(model: str, run, tag: str | None = None, root: Path = ARCHIVE) ->
         raise FileExistsError(entry.dir)
     entry.figures.mkdir(parents=True)
     entry.tensorboard.mkdir()
-    live_link(entry)
-    return entry
+    return entry  # runs/ gets its link once the writer has made an event file to link to
 
 
 def _git() -> str:

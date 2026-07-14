@@ -117,6 +117,7 @@ def run(
     opt, sched = optimiser_for(model, args)
     best = BestCheckpoint(entry.checkpoint, mode="min")
     writer = SummaryWriter(log_dir=str(entry.tensorboard))
+    archiving.live_link(entry)  # the event file exists now, so TensorBoard can be shown it
     lbfgs = args.optimizer == "lbfgs"
 
     print(
