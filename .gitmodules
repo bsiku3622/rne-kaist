@@ -1,0 +1,3 @@
+[submodule "model-training"]
+	path = model-training
+	url = https://github.com/typeulli/rne-model-training.git
