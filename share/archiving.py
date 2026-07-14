@@ -86,10 +86,9 @@ def live_link(entry: Entry) -> None:
     and the one actually training is lost among them.
 
     So the events stay inside the entry, where they belong, and ``runs/`` holds a
-    junction per run for TensorBoard to read. A junction costs nothing and deleting
-    one does not touch the archive, so ``runs/`` can be swept whenever it gets
-    crowded without losing a thing. Point ``--logdir archive`` when the whole
-    history *is* what you want to compare.
+    junction per run for TensorBoard to read. :func:`drop_live_link` takes it away
+    again when the run finishes, so what is listed is what is *running*. Point
+    ``--logdir archive`` when the whole history is what you want to compare.
     """
     RUNS.mkdir(exist_ok=True)
     link = RUNS / entry.dir.name
@@ -102,6 +101,20 @@ def live_link(entry: Entry) -> None:
         capture_output=True,
         check=False,
     )
+
+
+def drop_live_link(entry: Entry) -> None:
+    """Take ``runs/<entry>`` away again, now that the run is no longer live.
+
+    ``rmdir`` without ``/s`` unlinks the junction and leaves what it pointed at alone.
+    Deleting a junction with a tool that *follows* it -- ``rm -rf``, ``shutil.rmtree`` --
+    would walk into the archive entry and delete the events themselves, which is the one
+    thing this must not do.
+    """
+    link = RUNS / entry.dir.name
+    if not link.exists():
+        return
+    subprocess.run(["cmd", "/c", "rmdir", str(link)], capture_output=True, check=False)
 
 
 def open_entry(model: str, run, tag: str | None = None, root: Path = ARCHIVE) -> Entry:
@@ -198,6 +211,8 @@ def finalise(entry: Entry, run, config: dict, metrics: dict, lock: bool = False)
     (entry.dir / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
     (entry.dir / "env.json").write_text(json.dumps(_env(), indent=2))
     (entry.dir / "git.txt").write_text(_git())
+
+    drop_live_link(entry)  # it is a record now, not a monitor
 
     if lock:
         # everything but data/: NTFS shares a hard link's attributes with its source,
