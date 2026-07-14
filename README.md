@@ -14,17 +14,17 @@ simulation/  ──▶  data/  ──▶  model-training/  ──▶  archive/
                      └── config.json: how it was made
 ```
 
-## Two repositories, one boundary
+## Two repositories, and why they stay two
 
 The networks live in a repository of their own, mounted here as a submodule:
 
 | | Owner | What it holds |
 |---|---|---|
-| **`rne-kaist`** (this) | [@bsiku3622](https://github.com/bsiku3622) | the solver, the datasets, the archive, and the spectral basis |
-| **`model-training/`** | [@typeulli](https://github.com/typeulli) — [rne-model-training](https://github.com/typeulli/rne-model-training) | the networks: nine architectures behind one inference contract |
+| **`rne-kaist`** (this) | [@bsiku3622](https://github.com/bsiku3622) | the solver, the datasets, the archive, and the spectral model |
+| **`model-training/`** | [@typeulli](https://github.com/typeulli) — [rne-model-training](https://github.com/typeulli/rne-model-training) | nine coordinate networks behind one inference contract |
 
 A submodule is a pointer to a commit over there, not a copy of the code, so the
-two halves can move independently. Clone with:
+two halves move independently. Clone with:
 
 ```powershell
 git clone --recurse-submodules https://github.com/bsiku3622/rne-kaist
@@ -32,8 +32,19 @@ git clone --recurse-submodules https://github.com/bsiku3622/rne-kaist
 git submodule update --init
 ```
 
-They already agree on the data. Nothing had to change on either side: the nine
-models train against our runs on `--data-dir` alone.
+**They are kept apart on purpose.** Folding `models/spectral` into the
+submodule's `models/` was tried and abandoned: both projects have a `dataset.py`
+and the two mean different things — theirs draws batches from the corpus, ours
+builds a Fourier basis out of it — and both have an `agent.py`. Merged into one
+namespace, the imports resolve to whichever file the interpreter reaches first,
+which is a bug that hides until it does not. Two conventions in two directories
+cost nothing; two conventions in one directory cost correctness.
+
+What they *do* share is the data, and that needed no negotiation at all. The nine
+models train against our runs on `--data-dir` alone, and their
+`DEFAULT_FIELD_SHAPE` of `(25, 41, 161)` is
+`data/torch_20260710-122446_100_250_0.25` exactly — the same corpus, reached by a
+different path.
 
 ## Layout
 
@@ -84,17 +95,22 @@ directly — checkpoint, TensorBoard, figures, code snapshot, provenance — so 
 is nothing to clean up afterwards and nothing to collide over. `tensorboard
 --logdir archive` sees every run.
 
-## What is not reconciled
+## What the two do not share
 
-Worth stating plainly rather than papering over:
+Stated plainly rather than papered over, because a reader comparing numbers across
+the boundary needs to know:
 
 - **Two output conventions.** `model-training/` writes to `runs/` and
-  `checkpoints/`; we write archive entries. Both work; neither knows about the other.
-- **Two data loaders.** `share/grid.py` (mm, `[nt, nx, ny, nz]`) and its
-  `dataset.py` (SI, `[nt, nz, ny, nx]`) read the same files different ways.
-- **Two validation splits.** The networks hold out a random 10% of *points*; the
-  spectral model holds out a whole *power* and never sees it. **Those numbers are
-  not comparable,** and the gap between them is large.
+  `checkpoints/`; we open one archive entry per run. Both work; neither knows about
+  the other.
+- **Two data loaders.** `share/grid.py` (millimetres, `[nt, nx, ny, nz]`) and its
+  `dataset.py` (SI, `[nt, nz, ny, nx]`) read the same files in different units and
+  a different axis order.
+- **Two validation splits, and this is the one that bites.** The networks hold out
+  a random 10% of *points*, drawn from powers they also train on. The spectral model
+  holds out a whole *power* and never sees it. **The two sets of numbers are not
+  comparable**, and the gap between the tasks is large — the second is strictly
+  harder.
 
 Closing any of these means changing code in a repository this one does not own.
 

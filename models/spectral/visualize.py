@@ -24,7 +24,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from share import plotting
 from share.grid import load_run
 
-from spectral_model import SpectralMLP, derotate_phase, reconstruct
+from model import SpectralMLP, derotate_phase, reconstruct
 
 
 def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, vel: float,

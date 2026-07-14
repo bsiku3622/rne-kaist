@@ -43,7 +43,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from share import archiving, metrics
 from share.grid import load_run
 
-from spectral_model import SpectralMLP, derotate_phase, reconstruct
+from model import SpectralMLP, derotate_phase, reconstruct
 from visualize import render
 
 MODEL = "spectral"
