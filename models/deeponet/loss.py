@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
-from model import DeepONeuralNet, FieldDerivatives
+from .model import DeepONeuralNet, FieldDerivatives
 
 STEFAN_BOLTZMANN = 5.670374419e-8  # W m^-2 K^-4
 

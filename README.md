@@ -1,136 +1,135 @@
 # rne-kaist
 
-Surrogate modelling of the transient 3-D temperature field a laser scan induces in
-a metal plate (laser powder-bed fusion / directed energy deposition).
+Surrogate modelling of the transient 3-D temperature field a laser scan induces in a metal
+plate (laser powder-bed fusion / directed energy deposition).
 
-A solver generates the ground truth; thirteen models try to reproduce it in a
-fraction of the time. They do not agree with each other, and the interesting part
-is why.
+A solver generates the ground truth; twelve models try to reproduce it in a fraction of the
+time. They disagree with each other, and the interesting part is why.
 
 ```
-simulation/  ──▶  data/  ──▶  models/                    ──▶  archive/
-   solver         datasets     deeponet · coord · spectral      one entry
-                     │                                          per run
-                     │      typeulli-model-training/
-                     │         nine coordinate networks
+simulation/  ──▶  data/  ──▶  models/  ──▶  archive/  ──▶  reports/
+   solver         datasets     twelve       one entry      what it
+                     │                      per run        all meant
                      └── config.json: how the dataset was made
-```
-
-## Two repositories, and why they stay two
-
-| | Owner | What it holds |
-|---|---|---|
-| **`rne-kaist`** (this) | [@bsiku3622](https://github.com/bsiku3622) | the solver, the datasets, the archive, and three models |
-| **`typeulli-model-training/`** | [@typeulli](https://github.com/typeulli) — [rne-model-training](https://github.com/typeulli/rne-model-training) | nine coordinate networks behind one inference contract |
-
-The second is a **submodule**: this repository records a pointer to a commit over
-there, not a copy of its code, so the two halves move independently and neither
-can break the other. Clone with:
-
-```powershell
-git clone --recurse-submodules https://github.com/bsiku3622/rne-kaist
-# or, in an existing clone:
-git submodule update --init
-```
-
-**They are kept apart on purpose.** Folding `models/spectral` into the submodule's
-`models/` was tried and abandoned. Both projects have a `dataset.py` and the two
-mean different things — theirs draws batches from the corpus, ours builds a Fourier
-basis out of it — and both have an `agent.py`. In one namespace the imports resolve
-to whichever file the interpreter reaches first, and `from dataset import
-DEFAULT_FIELD_SHAPE` starts finding the wrong module. Two conventions in two
-directories cost nothing; two conventions in one directory cost correctness.
-
-What the two *do* share is the data, and that needed no negotiation. The nine
-models train against our runs on `--data-dir` alone, and their
-`DEFAULT_FIELD_SHAPE` of `(25, 41, 161)` is
-`data/torch_20260710-122446_100_250_0.25` exactly — the same corpus, reached by a
-different path.
-
-## Layout
-
-| Path | What it is |
-|---|---|
-| `simulation/` | The solver. Two independent implementations of the same problem — FEM (`heat_fenics.py`, legacy FEniCS 2019, CPU) and a 7-point finite-difference scheme (`heat_torch.py`, PyTorch, CUDA) — cross-validated against each other to 0.14% RMSE. |
-| `data/` | Solver output, one directory per run. Not tracked: a seven-power sweep takes ~20 s on a GPU, and each run carries the `config.json` that reproduces it. |
-| `share/` | The grid, the metrics, the figures, the archiver. A library, not an interface. |
-| `models/` | Ours. `deeponet` (branch/trunk, with the PDE in the loss), `coord` (the plain regression baseline), `spectral` (Fourier coefficients — one forward pass is a whole volume). |
-| `typeulli-model-training/` | **Submodule.** `mlp`, `pimlp`, `gmlp`, `cmlp`, `cgmlp`, `cpimlp`, `pidon`, `gdon`, `gpidon`. |
-| `archive/` | One directory per finished run: checkpoint, logs, TensorBoard events, figures, a code snapshot, hard links to the data, and the provenance. Not tracked. |
-| `reports/` | Figures that cut *across* runs, so they belong to no single archive entry. |
-
-`models/coord` and `models/deeponet` overlap with the submodule's `mlp` and
-`pidon`. They are kept anyway, for one reason: **they hold out a whole power and
-never see it**, and every run they make lands in an archive entry carrying its own
-config, metrics, code snapshot and provenance. The nine over there do neither. The
-same architecture measured two ways is worth having; what is not worth having is
-the two sets of numbers in one table (see below).
-
-## Naming
-
-Datasets and the trainings fitted to them are named the same way, so a directory
-listing reads without a decoder ring:
-
-```
-data/     <solver>_<stamp>_<minP>_<maxP>_<spacing>[-<tag>]
-archive/  <model>_<stamp>_<minP>_<maxP>_<spacing>[-<tag>]
-
-data/torch_20260710-132221_100_700_0.125
-archive/spectral_20260713-174928_100_700_0.125-derotated-detrended
 ```
 
 ## Running it
 
 ```powershell
-# 1. make a dataset  (writes data/torch_<stamp>_100_700_0.125/ and its config.json)
-python simulation/heat_torch.py --powers 100 200 300 400 500 600 700 `
-    --ele_size 0.125 --dt 6.25e-4
+# a dataset (writes data/torch_<stamp>_100_700_0.125/ and its config.json)
+python simulation/heat_torch.py --powers 100 200 300 400 500 600 700 --ele_size 0.125 --dt 6.25e-4
 
-# 2. our models. every run opens its own archive entry and writes into it directly --
-#    checkpoint, TensorBoard, figures, code snapshot, provenance -- so there is
-#    nothing to clean up afterwards and nothing to collide over
-$RUN = "data/torch_20260710-132221_100_700_0.125"
-python models/deeponet/train.py --run $RUN
-python models/coord/train.py    --run $RUN
-
-# the spectral model needs its basis built first
-python models/spectral/dataset.py --run $RUN
-python models/spectral/train.py   --run $RUN --derotate
-
-tensorboard --logdir archive       # every run at once
-
-# 3. the submodule's nine, which keep their own conventions
-cd typeulli-model-training
+# a model. every run opens its own archive entry and writes into it directly
 python train.py --list
-python train.py gpidon --data-dir ../data/torch_20260710-122446_100_250_0.25
-python benchmark.py --model gpidon --checkpoint checkpoints/gpidon/best.pt
+python train.py gpidon --run data/torch_20260710-122446_100_250_0.25 --holdout 175
+python train.py mlp    --run data/... --optimizer lbfgs --lr 1
+python train.py gdon   --help
+
+tensorboard --logdir runs        # what is training now
+tensorboard --logdir archive     # everything ever trained
 ```
 
-## What the two do not share
+`models/spectral` needs its Fourier basis built first:
 
-Stated plainly rather than papered over, because a reader comparing numbers across
-the boundary needs to know:
+```powershell
+python models/spectral/dataset.py --run data/... [--detrend]
+python models/spectral/train.py   --run data/... --derotate
+```
 
-- **Two validation splits, and this is the one that bites.** The nine networks hold
-  out a random 10% of *points*, drawn from the same powers they train on. Our three
-  hold out a whole *power* and never see it. **The two sets of numbers are not
-  comparable**, and the second task is strictly harder.
-- **Two output conventions.** `typeulli-model-training/` writes to `runs/` and
-  `checkpoints/`; we open one archive entry per run. Both work; neither knows about
-  the other.
-- **Two data loaders.** `share/grid.py` (millimetres, `[nt, nx, ny, nz]`) and its
-  `dataset.py` (SI, `[nt, nz, ny, nx]`) read the same files in different units and
-  a different axis order.
+## Layout
 
-Closing any of these means changing code in a repository this one does not own.
+| Path | What it is |
+|---|---|
+| `simulation/` | The solver. FEM (`heat_fenics.py`, legacy FEniCS, CPU) and a 7-point finite-difference scheme (`heat_torch.py`, PyTorch, CUDA), cross-validated against each other to 0.14% RMSE. |
+| `data/` | Solver output, one directory per run, each carrying the `config.json` that reproduces it. **Not tracked** — a seven-power sweep is ~20 s on a GPU. |
+| `share/` | Everything a model does that is not its own architecture. |
+| `models/` | One directory per model. Twelve of them. |
+| `archive/` | One directory per finished run: checkpoint, TensorBoard events, figures, a code snapshot, hard links to the data, and the provenance. **Not tracked.** |
+| `runs/` | Junctions into the archive entries currently training — what TensorBoard watches. Costs nothing; delete freely. **Not tracked.** |
+| `reports/` | Figures that answer a question rather than describe a run. **Tracked.** See `reports/README.md`. |
+| `typeulli-model-training/` | **Submodule.** [@typeulli](https://github.com/typeulli)'s repository, kept as the channel their code arrives through. Nine of the twelve models were ported out of it. |
+
+## The models
+
+| | Learns | Loss |
+|---|---|---|
+| `mlp` | `(P, t, z, y, x) -> T` | data |
+| `gmlp` | the same, handed the laser's gaussian as a gate | data |
+| `pimlp` | the same as `mlp` | data + PDE + BC + IC |
+| `pidon` | `(P; x, y, z, t) -> T`, branch over the power, trunk over space-time | data + PDE + BC + IC |
+| `gdon` | a DeepONet with the gaussian gate | data |
+| `gpidon` | both | data + PDE + BC + IC |
+| `cmlp` `cgmlp` `cpimlp` | **controls**: the same networks with the laser power removed | — |
+| `coord` | `(P, t, z, y, x) -> T` | data |
+| `deeponet` | branch/trunk, with the gaussian trunk feature | data + PDE + BC + IC |
+| `spectral` | `(P, t) -> the field's spatial Fourier coefficients` | data |
+
+The **controls** are the floor. The same `(t, z, y, x)` carries a different temperature at
+every power, so a network that cannot see `P` can do no better than the mean over the
+sweep. Any model that fails to beat them has learned nothing about the laser. (One did.)
+
+`spectral` is the only model that is not a network over coordinates. It predicts the
+coefficients of the whole field at once, so a forward pass returns a volume rather than a
+point — see `models/spectral/model.py`.
+
+## share/
+
+Not an interface. A library, and the place a thing is defined once instead of twelve times.
+
+| | |
+|---|---|
+| `corpus.py` | The point cloud, and `split_by_power` — the split every generalisation number here comes from. |
+| `grid.py` | The solver's output, back on the grid it was written from. |
+| `agent.py` | **The inference contract.** `predict_at([B,5] of (x,y,z,t,P)) -> [B,1] K`, `predict_of([B,2] of (t,P)) -> [B,1,D,H,W] K`. Every tool downstream is written against those two and nothing else, so adding a model costs an `agent.py` and changes no caller. Either end may be the primitive: most models implement `predict_at` and get the volume derived; `spectral` runs the other way. |
+| `harness.py` | What a model does around its architecture: read the corpus, hold out a power, build, score, render, archive. |
+| `training.py` | The loop. Adam or L-BFGS, the schedule, the validation cadence, the checkpoint. |
+| `metrics.py` | RMSE, L∞, **and peak error**. |
+| `plotting.py` | The figures, and the colour rules they obey. |
+| `archiving.py` | An entry per run, and the hard links that make it cost nothing. |
+
+## Three things this repository does differently, and why
+
+**Validation is a held-out power.** Not a random tenth of the *points* drawn from powers the
+model also trains on. Filling in gaps between points it has already seen is not the question
+a surrogate exists to answer, and the two tasks are not close: the same network scores 0.83 K
+on one and 1.45 K on the other.
+
+**The checkpoint is not chosen on RMSE.** RMSE is a volume average and the melt pool is a
+fraction of a percent of the plate, so the two come apart: a model sat at 14 K RMSE while
+flattening the peak by 44%, and by the metric it was selected with, it looked like the best
+one. Selection is on `rmse + |peak|` (`share/training.select`). The weighting is a judgement,
+made in the open — which beats a judgement made by omission.
+
+**A run writes into its own archive entry.** Checkpoint, events, figures, a snapshot of the
+code that produced them, hard links to the data, `config.json`, `metrics.json`, `env.json`,
+`git.txt`. Two models can train at once, nothing has to be swept up afterwards, and a number
+in a report can be walked back to the run, the code and the data that made it. The data is
+*linked*, not copied: copying cost 13 GB a run and six entries had accumulated 78 GB of
+byte-identical duplicates of a dataset the solver regenerates in 20 s.
+
+## The submodule
+
+`typeulli-model-training/` is [@typeulli](https://github.com/typeulli)'s
+[repository](https://github.com/typeulli/rne-model-training), mounted as a submodule. Its
+nine models now live under `models/` in this repository's conventions — their `model.py`,
+`loss.py`, `dataset.py` and `agent.py` came across **untouched**, because the physics in
+them is calibrated in SI and a unit slip inside a PDE residual trains happily and is wrong.
+Only the harness around them changed.
+
+The submodule stays as the channel their code arrives through:
+
+```powershell
+git submodule update --remote typeulli-model-training
+```
+
+Clone this repository with `--recurse-submodules`, or the directory arrives empty.
 
 ## History
 
-This repository merges two previously separate repositories, with their commit
-history preserved:
+Two repositories were merged here, with their commit history preserved:
 
-- `rne-am-simulation` → `simulation/`  ([archived](https://github.com/bsiku3622/rne-am-simulation))
-- `rne-am-pi-deeponet` → `models/deeponet/`  ([archived](https://github.com/bsiku3622/rne-am-pi-deeponet))
+- `rne-am-simulation` → `simulation/` ([archived](https://github.com/bsiku3622/rne-am-simulation))
+- `rne-am-pi-deeponet` → `models/deeponet/` ([archived](https://github.com/bsiku3622/rne-am-pi-deeponet))
 
-Earlier stages (a transfer-learning PINN reproducing Peng et al., JMP 138 (2025)
-140–156, and assorted exploratory solvers) live under `../olds/`.
+Earlier stages (a transfer-learning PINN reproducing Peng et al., JMP 138 (2025) 140–156,
+and assorted exploratory solvers) live under `../olds/`.

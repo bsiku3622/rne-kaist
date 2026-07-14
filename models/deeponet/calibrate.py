@@ -216,10 +216,10 @@ def fit_top_bc(
     )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     paths = sorted(args.data_dir.glob("*.npy"))
     if not paths:

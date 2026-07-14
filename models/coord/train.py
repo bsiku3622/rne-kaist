@@ -29,13 +29,13 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from share import archiving, metrics
 from share.grid import load_run
 
-from coord_model import CoordMLP
-from visualize import predict, render
+from .model import CoordMLP
+from .visualize import predict, render
 
 MODEL = "coord"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", type=Path, required=True, help="a solver run under data/")
     ap.add_argument("--holdout", type=float, default=400.0)
@@ -47,7 +47,7 @@ def main() -> None:
     ap.add_argument("--times", type=float, nargs="+", default=[0.5, 1.5, 3.0])
     ap.add_argument("--tag", type=str, default=None, help="suffix on the archive entry")
     ap.add_argument("--lock", action="store_true", help="mark the archive entry read-only")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     run = load_run(a.run)

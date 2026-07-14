@@ -24,7 +24,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from share import plotting
 from share.grid import load_run
 
-from model import SpectralMLP, derotate_phase, reconstruct
+from .model import SpectralMLP, derotate_phase, reconstruct
 
 
 def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, vel: float,
@@ -75,11 +75,11 @@ def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, ve
     return truth, floor, mine
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--entry", type=Path, required=True, help="an archive/ directory")
     ap.add_argument("--times", type=float, nargs="+", default=[0.5, 1.5, 3.0])
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     ckpt = torch.load(a.entry / "checkpoint.pt", map_location="cpu", weights_only=False)
     run = load_run(Path(ckpt["run_dir"]))

@@ -17,7 +17,7 @@ $root = "D:\School\KSA\RnE\rne-kaist"
 Set-Location $root
 
 $tb = Start-Process -FilePath "python" `
-  -ArgumentList "-m","tensorboard.main","--logdir","archive","--host","0.0.0.0","--port","6006" `
+  -ArgumentList "-m","tensorboard.main","--logdir","runs","--host","0.0.0.0","--port","6006" `
   -RedirectStandardOutput "$root\tensorboard.log" -RedirectStandardError "$root\tensorboard.err" `
   -WindowStyle Hidden -PassThru
 
@@ -81,7 +81,15 @@ Get-NetTCPConnection -LocalPort 6006,8080 -State Listen |
 
 **파일 서버는 반대로 `--bind 10.8.0.2`로 묶습니다.** `0.0.0.0`으로 열면 공인 IP와 집 LAN 쪽으로도 폴더 전체가 노출됩니다. VPN 인터페이스에만 묶어 두면 외부에서 직접 접근할 수 없습니다.
 
-**`--logdir archive`입니다.** `--logdir`는 이제 `archive/`를 가리킵니다. 아카이브 엔트리마다 `tensorboard/`가 있고, TensorBoard가 그걸 전부 훑어서 run 목록으로 보여줍니다. 전역 `runs/` 폴더는 없어졌습니다.
+**`--logdir runs`입니다.** 이벤트 파일 자체는 아카이브 엔트리 안(`archive/<entry>/tensorboard/`)에 있고, `runs/`에는 엔트리를 가리키는 **정션**만 들어갑니다. `share/archiving.py`의 `live_link()`가 학습 시작 시 하나씩 걸어줍니다.
+
+`--logdir archive`로 열면 **지금까지 학습한 모든 run이 사이드바에 뜹니다.** 아카이브는 *기록*이고 TensorBoard는 *모니터*라, 지금 돌고 있는 게 30개 이력에 묻힙니다. 그래서 `runs/`를 봅니다. 정션은 공짜고 지워도 아카이브는 안 건드리므로, 목록이 지저분해지면 `runs/`를 통째로 비우면 됩니다. 전체 이력을 *비교하고 싶을 때만* `--logdir archive`로 띄우세요.
+
+`typeulli-model-training/`의 run도 보려면 그쪽 `runs/` 디렉터리 전체에 정션을 하나 겁니다.
+
+```powershell
+New-Item -ItemType Junction -Path "runs\typeulli" -Target "typeulli-model-training\runs"
+```
 
 **`archive\`의 ACL 잠금은 구조가 확정되면 겁니다 (현재 미적용).** 연구 데이터 보존용입니다. 해제가 필요하면:
 

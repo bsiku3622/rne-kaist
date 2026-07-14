@@ -25,7 +25,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from share import plotting
 from share.grid import load_run
 
-from coord_model import CoordMLP
+from .model import CoordMLP
 
 CHUNK = 1 << 21
 
@@ -77,11 +77,11 @@ def render(model, run, test_p: int, figdir: Path, times, npz=None):
     return truth, mine
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--entry", type=Path, required=True, help="an archive/ directory")
     ap.add_argument("--times", type=float, nargs="+", default=[0.5, 1.5, 3.0])
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     ckpt = torch.load(a.entry / "checkpoint.pt", map_location="cpu", weights_only=False)
     run = load_run(Path(ckpt["run_dir"]))

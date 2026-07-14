@@ -49,6 +49,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parent.parent
 ARCHIVE = REPO / "archive"
 SHARE = REPO / "share"
+RUNS = REPO / "runs"  # what TensorBoard watches; see live_link()
 
 
 @dataclass
@@ -77,6 +78,32 @@ def _name(model: str, run, tag: str | None, stamp: str) -> str:
     return f"{base}-{tag}" if tag else base
 
 
+def live_link(entry: Entry) -> None:
+    """Point ``runs/<entry>`` at the entry's event files, for TensorBoard to watch.
+
+    The archive is a *record*; TensorBoard is a *monitor*, and pointing it straight
+    at ``archive/`` conflates the two -- every run ever made shows up in the sidebar,
+    and the one actually training is lost among them.
+
+    So the events stay inside the entry, where they belong, and ``runs/`` holds a
+    junction per run for TensorBoard to read. A junction costs nothing and deleting
+    one does not touch the archive, so ``runs/`` can be swept whenever it gets
+    crowded without losing a thing. Point ``--logdir archive`` when the whole
+    history *is* what you want to compare.
+    """
+    RUNS.mkdir(exist_ok=True)
+    link = RUNS / entry.dir.name
+    if link.exists():
+        return
+    # a junction, not a symlink: NTFS symlinks need administrator or developer mode,
+    # junctions do not, and for a directory they behave the same
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(entry.tensorboard)],
+        capture_output=True,
+        check=False,
+    )
+
+
 def open_entry(model: str, run, tag: str | None = None, root: Path = ARCHIVE) -> Entry:
     """Create the entry and the directories the run is about to write into."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -85,6 +112,7 @@ def open_entry(model: str, run, tag: str | None = None, root: Path = ARCHIVE) ->
         raise FileExistsError(entry.dir)
     entry.figures.mkdir(parents=True)
     entry.tensorboard.mkdir()
+    live_link(entry)
     return entry
 
 

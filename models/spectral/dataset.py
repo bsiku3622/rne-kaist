@@ -44,6 +44,7 @@ Example::
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -564,7 +565,7 @@ NPZ = "spectral_fft2.npz"  # the name models/spectral/train.py looks for
 NPZ_DETRENDED = "spectral_fft2_detrended.npz"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--run", type=Path, required=True,
@@ -572,8 +573,9 @@ def main() -> None:
     )
     ap.add_argument(
         "--figdir", type=Path, default=None,
-        help="default: reports/spectral-<run>/  -- these justify the mode budget, "
-             "so they are kept where they can be read, not under the ignored data/",
+        help="default: reports/<stamp>_spectral-mode-budget[-detrended]/ -- these are what "
+             "justifies the mode budget, so they are kept where they can be read, not under "
+             "the ignored data/. See reports/README.md.",
     )
     ap.add_argument(
         "--targets", type=float, nargs="+", default=[0.99, 0.999, 0.9999, 0.99999]
@@ -596,13 +598,14 @@ def main() -> None:
             "already costs -- see simulation/README.md)"
         ),
     )
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     run = load_run(a.run)
     a.save = None if a.no_save else run.dir / (NPZ_DETRENDED if a.detrend else NPZ)
     if a.figdir is None:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
         suffix = "-detrended" if a.detrend else ""
-        a.figdir = REPO / "reports" / f"spectral-{run.dir.name}{suffix}"
+        a.figdir = REPO / "reports" / f"{stamp}_spectral-mode-budget{suffix}"
     nt, nx, ny, nz = run.shape
     d = float(run.x[1] - run.x[0])
     print(

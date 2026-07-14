@@ -32,9 +32,9 @@ import numpy as np
 import torch
 from matplotlib.figure import Figure
 
-from calibrate import load_grid, Grid
-from model import DeepONeuralNet, PlainNeuralNet
-from train import BEAM_RADIUS, PROPERTIES
+from .calibrate import load_grid, Grid
+from .model import DeepONeuralNet, PlainNeuralNet
+from .train import BEAM_RADIUS, PROPERTIES
 
 MODEL_CLASSES = {"DeepONeuralNet": DeepONeuralNet, "PlainNeuralNet": PlainNeuralNet}
 
@@ -426,7 +426,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     args = parse_args()
     device = torch.device(args.device)
 

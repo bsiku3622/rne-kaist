@@ -31,8 +31,8 @@ from share import archiving
 from share.grid import load_run
 from tqdm import tqdm
 
-from loss import LossWeights, PINNLoss, PointSet, ResidualScales, ThermalProperties
-from model import DeepONeuralNet, PlainNeuralNet
+from .loss import LossWeights, PINNLoss, PointSet, ResidualScales, ThermalProperties
+from .model import DeepONeuralNet, PlainNeuralNet
 
 MM = 1.0e-3
 
@@ -357,7 +357,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     args = parse_args()
     dtype = torch.float64 if args.double else torch.float32
     torch.set_default_dtype(dtype)

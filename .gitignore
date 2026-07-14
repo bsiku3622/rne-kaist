@@ -8,6 +8,10 @@ data/
 # share/archiving.py, and far too large to track.
 archive/
 
+# TensorBoard watches this: one junction per run, pointing into archive/<entry>/tensorboard.
+# Costs nothing, deleting one does not touch the archive.
+runs/
+
 # Raw fields, checkpoints, and the ParaView files heat_fenics.py writes
 *.npy
 *.npz
