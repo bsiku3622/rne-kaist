@@ -88,6 +88,19 @@ def optimiser_for(model, args):
             max_iter=args.lbfgs_inner,
             history_size=HISTORY,
             line_search_fn="strong_wolfe",
+            # torch's stopping rules are *absolute*: quit when |grad|_inf <= 1e-7, or when
+            # the loss moves by less than 1e-9. Those numbers assume an objective of order
+            # one. Ours is a scaled MSE living around 1e-6, so a step that improves it by a
+            # part in a thousand moves it by less than 1e-9 -- and L-BFGS calls that
+            # convergence and stops, nowhere near a minimum. Measured: with these on, the
+            # 300th step spends one gradient evaluation and the loss sits at 1.3e-5; with
+            # them off it spends twenty-five and reaches 5.9e-6.
+            #
+            # So the tolerances are off and `max_iter` is the only thing that ends an inner
+            # loop. The budget is set here, not discovered by a threshold that does not know
+            # what our loss is worth.
+            tolerance_grad=0.0,
+            tolerance_change=0.0,
         )
         return opt, None
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
