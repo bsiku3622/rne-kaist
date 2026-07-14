@@ -3,24 +3,47 @@
 Surrogate modelling of the transient 3-D temperature field a laser scan induces in
 a metal plate (laser powder-bed fusion / directed energy deposition).
 
-A solver generates the ground truth; several models try to reproduce it in a
-fraction of the time. The models do not agree with each other, and the interesting
-part is why.
+A solver generates the ground truth; ten models try to reproduce it in a fraction
+of the time. They do not agree with each other, and the interesting part is why.
 
 ```
-simulation/  ──▶  data/  ──▶  models/  ──▶  archive/
-   solver         datasets      four         one entry
-                               attempts      per run
+simulation/  ──▶  data/  ──▶  model-training/  ──▶  archive/
+   solver         datasets      nine networks        one entry
+                     │          models/spectral      per run
+                     │              the tenth
+                     └── config.json: how it was made
 ```
+
+## Two repositories, one boundary
+
+The networks live in a repository of their own, mounted here as a submodule:
+
+| | Owner | What it holds |
+|---|---|---|
+| **`rne-kaist`** (this) | [@bsiku3622](https://github.com/bsiku3622) | the solver, the datasets, the archive, and the spectral basis |
+| **`model-training/`** | [@typeulli](https://github.com/typeulli) — [rne-model-training](https://github.com/typeulli/rne-model-training) | the networks: nine architectures behind one inference contract |
+
+A submodule is a pointer to a commit over there, not a copy of the code, so the
+two halves can move independently. Clone with:
+
+```powershell
+git clone --recurse-submodules https://github.com/bsiku3622/rne-kaist
+# or, in an existing clone:
+git submodule update --init
+```
+
+They already agree on the data. Nothing had to change on either side: the nine
+models train against our runs on `--data-dir` alone.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `simulation/` | The solver. Two independent implementations of the same problem — FEM (`heat_fenics.py`, legacy FEniCS 2019, CPU) and a 7-point finite-difference scheme (`heat_torch.py`, PyTorch, CUDA) — cross-validated against each other to 0.14% RMSE. See `simulation/README.md`. |
+| `simulation/` | The solver. Two independent implementations of the same problem — FEM (`heat_fenics.py`, legacy FEniCS 2019, CPU) and a 7-point finite-difference scheme (`heat_torch.py`, PyTorch, CUDA) — cross-validated against each other to 0.14% RMSE. |
 | `data/` | Solver output, one directory per run. Not tracked: a seven-power sweep takes ~20 s on a GPU, and each run carries the `config.json` that reproduces it. |
-| `share/` | What every model needs and nothing that binds them together — the grid, the metrics, the figures, the archiver. A library, not an interface: **no model imports another model.** |
-| `models/` | One directory per model. Each owns its `train.py` and its `visualize.py`, and shares nothing with its neighbours except `share/`. |
+| `share/` | The grid, the metrics, the figures, the archiver. A library, not an interface. |
+| `models/spectral/` | The one model that is not a network over coordinates — it learns the field's spatial **Fourier coefficients** instead, so one forward pass is a whole volume. |
+| `model-training/` | **Submodule.** Nine networks: `mlp`, `pimlp`, `gmlp`, `cmlp`, `cgmlp`, `cpimlp`, `pidon`, `gdon`, `gpidon`. |
 | `archive/` | One directory per finished run: checkpoint, logs, TensorBoard events, figures, a code snapshot, hard links to the data, and the provenance. Not tracked. |
 | `reports/` | Figures that cut *across* runs, so they belong to no single archive entry. |
 
@@ -33,28 +56,9 @@ listing reads without a decoder ring:
 data/     <solver>_<stamp>_<minP>_<maxP>_<spacing>[-<tag>]
 archive/  <model>_<stamp>_<minP>_<maxP>_<spacing>[-<tag>]
 
-data/torch_20260713-151246_100_700_0.125
-archive/spectral_20260713-152030_100_700_0.125-derotated
+data/torch_20260710-132221_100_700_0.125
+archive/spectral_20260713-174928_100_700_0.125-derotated-detrended
 ```
-
-## The models
-
-All four take the same data and are scored by the same three numbers
-(`share/metrics.py`), but they do not solve the same problem, and two of them are
-not comparable to the others without care.
-
-| Model | Learns | Params | Validation |
-|---|---|---|---|
-| `deeponet` | `(P; x,y,z,t) -> T`, branch/trunk, with PDE + BC + IC residuals in the loss | 133k | a random 10% of *points* |
-| `deeponet --architecture mlp` | the same, as one MLP over the five raw inputs, at matched parameter count | 133k | a random 10% of *points* |
-| `spectral` | `(P, t) -> every spatial Fourier coefficient` | 9.5M | a **held-out power** |
-| `coord` | `(P, t, z, y, x) -> T`, pure regression, no physics term | 34k | a **held-out power** |
-
-**The validation splits differ, and the difference matters.** `deeponet` scores itself
-on random points drawn from the same powers it trained on; `spectral` and `coord`
-hold a whole power out and never see it. Those numbers do not belong in the same
-table. `deeponet` is also the only one whose loss contains the PDE — the other two
-are fitting data and nothing else.
 
 ## Running it
 
@@ -63,54 +67,44 @@ are fitting data and nothing else.
 python simulation/heat_torch.py --powers 100 200 300 400 500 600 700 `
     --ele_size 0.125 --dt 6.25e-4
 
-# 2. train.  every run opens its own archive entry and writes into it directly --
-#    checkpoint, TensorBoard, figures, code snapshot, provenance -- so there is
-#    nothing to clean up afterwards and nothing to collide over
-python models/deeponet/train.py --run data/torch_20260713-151246_100_700_0.125
-python models/coord/train.py    --run data/torch_20260713-151246_100_700_0.125
+# 2a. the networks, from the submodule
+cd model-training
+python train.py --list
+python train.py gpidon --data-dir ../data/torch_20260710-132221_100_700_0.125
+python benchmark.py --model gpidon --checkpoint checkpoints/gpidon/best.pt
 
-# the spectral model needs its basis built first
-python models/spectral/dataset.py --run data/torch_20260713-151246_100_700_0.125
-python models/spectral/train.py   --run data/torch_20260713-151246_100_700_0.125 --derotate
-
-# 3. every run at once
-tensorboard --logdir archive
+# 2b. the spectral model, which needs its basis built first
+cd ..
+python models/spectral/dataset.py --run data/torch_20260710-132221_100_700_0.125
+python models/spectral/train.py   --run data/torch_20260710-132221_100_700_0.125 --derotate
 ```
 
-Re-render an old run's figures without retraining:
+Every `models/spectral` run opens its own archive entry and writes into it
+directly — checkpoint, TensorBoard, figures, code snapshot, provenance — so there
+is nothing to clean up afterwards and nothing to collide over. `tensorboard
+--logdir archive` sees every run.
 
-```powershell
-python models/spectral/visualize.py --entry archive/spectral_20260713-152030_100_700_0.125
-```
+## What is not reconciled
 
-## What an archive entry holds
+Worth stating plainly rather than papering over:
 
-```
-archive/spectral_20260713-152030_100_700_0.125-derotated/
-├── checkpoint.pt
-├── tensorboard/            event files; --logdir archive sees every run
-├── figures/                whatever that model's visualize.py renders
-├── code/                   models/<model>/ and share/, as they were
-├── data/                   hard links into data/<run>/, plus a manifest
-├── config.json             every argument, resolved
-├── metrics.json            the scores, so runs compare without loading a checkpoint
-├── env.json                python, torch, CUDA, the GPU
-└── git.txt                 the commit, and whether the tree was dirty
-```
+- **Two output conventions.** `model-training/` writes to `runs/` and
+  `checkpoints/`; we write archive entries. Both work; neither knows about the other.
+- **Two data loaders.** `share/grid.py` (mm, `[nt, nx, ny, nz]`) and its
+  `dataset.py` (SI, `[nt, nz, ny, nx]`) read the same files different ways.
+- **Two validation splits.** The networks hold out a random 10% of *points*; the
+  spectral model holds out a whole *power* and never sees it. **Those numbers are
+  not comparable,** and the gap between them is large.
 
-**The data is hard-linked, not copied.** Copying it cost 13 GB per run, and six
-entries had quietly accumulated 78 GB of byte-identical duplicates of a dataset the
-solver regenerates in 20 s. A hard link is a second name for the same file record: it
-costs nothing, it opens exactly like the original, and deleting the original leaves
-the archived name intact.
+Closing any of these means changing code in a repository this one does not own.
 
 ## History
 
 This repository merges two previously separate repositories, with their commit
 history preserved:
 
-- `rne-am-simulation` → `simulation/`
-- `rne-am-pi-deeponet` → `models/deeponet/`
+- `rne-am-simulation` → `simulation/`  ([archived](https://github.com/bsiku3622/rne-am-simulation))
+- `rne-am-pi-deeponet` → superseded by `model-training/`  ([archived](https://github.com/bsiku3622/rne-am-pi-deeponet))
 
 Earlier stages (a transfer-learning PINN reproducing Peng et al., JMP 138 (2025)
-140–156, and assorted exploratory solvers) live under `../archive/`.
+140–156, and assorted exploratory solvers) live under `../olds/`.

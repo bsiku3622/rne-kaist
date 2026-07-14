@@ -1,10 +1,10 @@
 """Fit (P, t) -> spatial Fourier coefficients, and archive the run that did it.
 
-The DeepONet in ``models/deeponet`` learns a function of five variables and is asked
-for one temperature at a time. Here the spatial dependence is already carried by the
-basis ``dataset.py`` built, so all that is left to learn is how the coefficients move
-as the laser power and the clock change -- a map from R^2, which three hidden layers
-are enough for.
+The nine networks in ``model-training/`` all learn a function of five variables and
+are asked for one temperature at a time. Here the spatial dependence is already
+carried by the basis ``dataset.py`` built, so all that is left to learn is how the
+coefficients move as the laser power and the clock change -- a map from R^2, which
+three hidden layers are enough for. One forward pass is a whole volume.
 
 Two things make the evaluation honest.
 
