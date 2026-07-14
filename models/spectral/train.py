@@ -1,6 +1,6 @@
 """Fit (P, t) -> spatial Fourier coefficients, and archive the run that did it.
 
-The nine networks in ``model-training/`` all learn a function of five variables and
+The nine networks in ``typeulli-model-training/`` all learn a function of five variables and
 are asked for one temperature at a time. Here the spatial dependence is already
 carried by the basis ``dataset.py`` built, so all that is left to learn is how the
 coefficients move as the laser power and the clock change -- a map from R^2, which
