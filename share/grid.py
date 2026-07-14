@@ -72,6 +72,40 @@ class Run:
         return i
 
 
+def detrend_x(dT: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Split the field into a part that is periodic in x and the ramp that made it so.
+
+    A DFT along x assumes the plate wraps: that the far end at x = L is the near end
+    at x = 0. It is not. By the end of a scan the trail behind the start is still 41 K
+    warm while the far end never heated at all, so the transform sees a cliff that no
+    thermometer would -- and a cliff's coefficients decay like 1/m, which is barely at
+    all, so it fills the high wavenumbers with an artefact.
+
+    Subtracting the straight line that joins the two ends removes it. For each column
+    ``(y, z)``, ``D = dT(L) - dT(0)`` is the mismatch, and ``dT - (x/L) * D`` has equal
+    values at both ends, so the periodic extension is continuous and the coefficients
+    fall away like 1/m^2 instead.
+
+    Nothing is lost: ``D`` is returned, and :func:`retrend_x` puts it back exactly. It
+    is worth keeping the two apart for a second reason, though -- the cliff is pinned
+    to the domain while the melt pool travels with the laser, so a model that predicts
+    them separately can de-rotate the one and leave the other alone.
+
+    ``dT`` is ``(nt, nx, ny, nz)``; ``D`` comes back as ``(nt, ny, nz)``.
+    """
+    nx = dT.shape[1]
+    s = np.linspace(0.0, 1.0, nx).reshape(1, nx, 1, 1)
+    D = dT[:, -1] - dT[:, 0]
+    return dT - s * D[:, None], D
+
+
+def retrend_x(residual: np.ndarray, D: np.ndarray) -> np.ndarray:
+    """Inverse of :func:`detrend_x`."""
+    nx = residual.shape[1]
+    s = np.linspace(0.0, 1.0, nx).reshape(1, nx, 1, 1)
+    return residual + s * D[:, None]
+
+
 def _power_of(path: Path) -> int:
     match = re.search(r"data_(\d+)W\.npy$", path.name)
     if match is None:

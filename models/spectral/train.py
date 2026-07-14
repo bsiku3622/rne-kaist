@@ -48,19 +48,32 @@ from visualize import render
 
 MODEL = "spectral"
 NPZ = "spectral_fft2.npz"
+NPZ_DETRENDED = "spectral_fft2_detrended.npz"
 
 
-def _fields(model, X, nP, nt, shape, spin, derotate, meta):
+def split(flat, nP, nt, shape, n_coef, ramp_shape):
+    """Undo the packing: the network emits [Re, Im, ramp] in one vector."""
+    coef = flat[..., :n_coef].reshape(nP, nt, *shape, 2)
+    c = coef[..., 0] + 1j * coef[..., 1]
+    ramp = (
+        flat[..., n_coef:].reshape(nP, nt, *ramp_shape) if ramp_shape is not None else None
+    )
+    return c, ramp
+
+
+def _fields(model, X, nP, nt, shape, spin, derotate, meta, n_coef, ramp_shape):
     """The model's field for every power, back in the lab frame."""
     dev = next(model.parameters()).device
     with torch.no_grad():
         out = model.denormalise(
             model(torch.tensor(X, dtype=torch.float32, device=dev)).cpu().numpy()
-        ).reshape(nP, nt, *shape, 2)
-    c = out[..., 0] + 1j * out[..., 1]
+        ).reshape(nP * nt, -1)
+    c, ramp = split(out, nP, nt, shape, n_coef, ramp_shape)
     if derotate:
+        # the coefficients travel with the laser; the ramp is pinned to the domain,
+        # so it is the one thing that must NOT be spun back
         c = c / spin[None, :, :, None, None]
-    return [reconstruct(c[i], meta) for i in range(nP)]
+    return [reconstruct(c[i], meta, None if ramp is None else ramp[i]) for i in range(nP)]
 
 
 def main() -> None:
@@ -70,6 +83,8 @@ def main() -> None:
     ap.add_argument("--norm", choices=("global", "per-coef"), default="global")
     ap.add_argument("--derotate", action="store_true",
                     help="learn the coefficients in the frame that moves with the laser")
+    ap.add_argument("--detrend", action="store_true",
+                    help="use the detrended npz: the x-wrap ramp is a separate output")
     ap.add_argument("--vel", type=float, default=10.0, help="scan speed, mm/s (VEL)")
     ap.add_argument("--width", type=int, default=128)
     ap.add_argument("--depth", type=int, default=3)
@@ -82,11 +97,13 @@ def main() -> None:
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     run = load_run(a.run)
-    npz_path = run.dir / NPZ
+    name = NPZ_DETRENDED if a.detrend else NPZ
+    npz_path = run.dir / name
     if not npz_path.is_file():
+        flag = " --detrend" if a.detrend else ""
         raise SystemExit(
-            f"no {NPZ} in {run.dir}\n"
-            f"build it first:  python models/spectral/dataset.py --run {run.dir}"
+            f"no {name} in {run.dir}\n"
+            f"build it first:  python models/spectral/dataset.py --run {run.dir}{flag}"
         )
     npz = np.load(npz_path)
 
@@ -94,14 +111,22 @@ def main() -> None:
     nP, nt = coef.shape[:2]
     shape = coef.shape[2:]
     meta = {k: npz[k] for k in ("mx", "my", "grid")}
+    ramp = npz["ramp"] if a.detrend else None
+    ramp_shape = ramp.shape[2:] if ramp is not None else None
 
     spin = derotate_phase(meta["mx"], run, times, a.vel)
+    # only the coefficients are spun back. The ramp is the x-wrap cliff, which is
+    # pinned to the domain and never moved, so de-rotating it would inject an
+    # oscillation rather than remove one -- that is the whole point of splitting them.
     work = coef * spin[None, :, :, None, None] if a.derotate else coef
 
     X = np.stack(
         np.meshgrid(powers / powers.max(), times / times.max(), indexing="ij"), -1
     ).reshape(-1, 2)
     Y = np.stack([work.real, work.imag], -1).reshape(nP * nt, -1).astype(np.float64)
+    n_coef = Y.shape[1]
+    if ramp is not None:
+        Y = np.concatenate([Y, ramp.reshape(nP * nt, -1).astype(np.float64)], axis=1)
 
     test_p = int(np.argmin(np.abs(powers - a.holdout)))
     tr = np.repeat(np.arange(nP) != test_p, nt)
@@ -154,8 +179,9 @@ def main() -> None:
     print(f"  {wall:.0f} s\n")
 
     model.eval()
-    render(model, npz, run, test_p, entry.figures, a.times, a.derotate, a.vel)
-    preds = _fields(model, X, nP, nt, shape, spin, a.derotate, meta)
+    render(model, npz, run, test_p, entry.figures, a.times, a.derotate, a.vel,
+           n_coef=n_coef, ramp_shape=ramp_shape)
+    preds = _fields(model, X, nP, nt, shape, spin, a.derotate, meta, n_coef, ramp_shape)
 
     print("Against the solver.  'floor' is what the kept modes can do at best.\n")
     print(f"{'P':>6} {'':>7} {'RMSE':>9} {'Linf':>8} {'peak':>9}")
@@ -164,7 +190,9 @@ def main() -> None:
     for i, p in enumerate(powers):
         truth = run.dT(i)
         row = {
-            "floor": metrics.score(reconstruct(coef[i], meta), truth),
+            "floor": metrics.score(
+                reconstruct(coef[i], meta, None if ramp is None else ramp[i]), truth
+            ),
             "model": metrics.score(preds[i], truth),
         }
         scores[int(p)] = row

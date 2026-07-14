@@ -32,9 +32,16 @@ removing one, and the fix for it is to detrend x, not to sample time more finely
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import torch
 from torch import nn
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from share.grid import retrend_x
 
 
 class SpectralMLP(nn.Module):
@@ -74,16 +81,22 @@ def derotate_phase(mx: np.ndarray, run, times: np.ndarray, vel: float) -> np.nda
     return np.exp(2j * np.pi * (mx / Lx) * vel * times[:, None])
 
 
-def reconstruct(coef: np.ndarray, meta: dict) -> np.ndarray:
+def reconstruct(coef: np.ndarray, meta: dict, ramp: np.ndarray | None = None) -> np.ndarray:
     """Coefficients -> dT on the grid. The inverse of what dataset.py stored.
 
     ``y`` holds only its non-negative wavenumbers, since ``C(-kx, -ky) = conj(C(kx,
     ky))`` makes the rest redundant, so the way back is an ``irfftn`` over ``(x, y)``
     with ``z`` left alone.
+
+    ``ramp`` is the x-wrap mismatch a detrended dataset took out before transforming.
+    Putting it back is the last step, and it is what keeps the two halves honest: the
+    coefficients carry the pool that travels with the laser, the ramp carries the cliff
+    that does not.
     """
     nx, ny, nz = meta["grid"]
     mx, my = meta["mx"], meta["my"]
     nt = coef.shape[0]
     full = np.zeros((nt, nx, ny // 2 + 1, nz), dtype=np.complex128)
     full[:, mx[:, None], my[None, :], :] = coef
-    return np.fft.irfftn(full, s=(nx, ny), axes=(1, 2), norm="ortho")
+    dT = np.fft.irfftn(full, s=(nx, ny), axes=(1, 2), norm="ortho")
+    return dT if ramp is None else retrend_x(dT, np.asarray(ramp, dtype=np.float64))

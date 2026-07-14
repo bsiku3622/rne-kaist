@@ -27,7 +27,8 @@ from share.grid import load_run
 from spectral_model import SpectralMLP, derotate_phase, reconstruct
 
 
-def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, vel: float):
+def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, vel: float,
+           n_coef: int | None = None, ramp_shape=None):
     """Every figure this model is judged by, written into ``figdir``."""
     coef, powers, t = npz["coef"], npz["powers"], npz["t"]
     nP, nt = coef.shape[:2]
@@ -39,16 +40,26 @@ def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, ve
     ).reshape(-1, 2)
     with torch.no_grad():
         dev = next(model.parameters()).device
-        out = model.denormalise(
+        flat = model.denormalise(
             model(torch.tensor(X, dtype=torch.float32, device=dev)).cpu().numpy()
-        ).reshape(nP, nt, *coef.shape[2:], 2)
-    pred = out[..., 0] + 1j * out[..., 1]
+        ).reshape(nP * nt, -1)
+    if n_coef is None:
+        n_coef = flat.shape[1]
+    c = flat[:, :n_coef].reshape(nP, nt, *coef.shape[2:], 2)
+    pred = c[..., 0] + 1j * c[..., 1]
     if derotate:
         pred = pred / derotate_phase(meta["mx"], run, t, vel)[None, :, :, None, None]
 
+    ramp = npz["ramp"] if ramp_shape is not None else None
+    pred_ramp = (
+        flat[:, n_coef:].reshape(nP, nt, *ramp_shape) if ramp_shape is not None else None
+    )
+
     truth = run.dT(test_p)
-    floor = reconstruct(coef[test_p], meta)
-    mine = reconstruct(pred[test_p], meta)
+    floor = reconstruct(coef[test_p], meta, None if ramp is None else ramp[test_p])
+    mine = reconstruct(
+        pred[test_p], meta, None if pred_ramp is None else pred_ramp[test_p]
+    )
 
     # where the raw coefficient series starts aliasing -- the reason the spin is
     # divided out analytically rather than left for the network to find. It is not a

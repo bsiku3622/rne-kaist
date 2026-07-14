@@ -53,7 +53,7 @@ from scipy.fft import dctn, idctn
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from share.grid import T_AMB, Run, load_run
+from share.grid import T_AMB, Run, detrend_x, load_run, retrend_x
 
 VARIANTS = ("fft3", "fft2", "dct")
 
@@ -136,7 +136,15 @@ def dof(variant: str, nz: int, kx: np.ndarray, ky: np.ndarray, kz: np.ndarray):
 # --------------------------------------------------------------------------- #
 
 
-def accumulate(run: Run) -> dict:
+def field(run: Run, i: int, detrend: bool):
+    """The field the transform is applied to, and the ramp taken out of it."""
+    dT = run.dT(i)
+    if not detrend:
+        return dT, None
+    return detrend_x(dT)
+
+
+def accumulate(run: Run, detrend: bool = False) -> dict:
     """One pass over the sweep: folded spectra, kept per power and per snapshot.
 
     Energy scales like P^2, so 100 W carries under 1% of the sweep's total while
@@ -155,7 +163,7 @@ def accumulate(run: Run) -> dict:
     peak = np.zeros((nP, nt))
 
     for i, P in enumerate(run.powers):
-        dT = run.dT(i)
+        dT, _ = field(run, i, detrend)
         peak[i] = dT.reshape(nt, -1).max(axis=1)
         snap_total[i] = (dT**2).reshape(nt, -1).sum(axis=1)
         total[i] = snap_total[i].sum()
@@ -248,7 +256,7 @@ def reconstruct_error(dT: np.ndarray, variant: str, box: dict) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-def save_dataset(run: Run, box: dict, out: Path) -> None:
+def save_dataset(run: Run, box: dict, out: Path, detrend: bool = False) -> None:
     """Write the truncated ``fft2`` coefficients, and check they reconstruct.
 
     Stored as a real-input FFT over ``(x, y)``: ``y`` keeps only its non-negative
@@ -258,22 +266,36 @@ def save_dataset(run: Run, box: dict, out: Path) -> None:
 
         dT = np.fft.irfftn(full, s=(nx, ny), axes=(0, 1), norm="ortho")
         T  = dT + T_amb
+
+    Under ``--detrend`` the coefficients are those of the *residual* -- the field with
+    the x-wrap ramp taken out -- and ``ramp`` holds the ``(nt, ny, nz)`` end-face
+    mismatch that was removed, so the last step becomes ``retrend_x(dT, ramp) + T_amb``.
+    That costs ``ny * nz`` extra numbers a snapshot and buys back the high wavenumbers
+    the cliff was filling with an artefact.
     """
     nt, nx, ny, nz = run.shape
     kx, ky = box["kx"], box["ky"]
     mx = np.r_[np.arange(kx + 1), np.arange(-kx, 0)]  # 0..kx, -kx..-1
     my = np.arange(ky + 1)
 
-    coef = np.empty((len(run.powers), nt, len(mx), len(my), nz), dtype=np.complex64)
+    nP = len(run.powers)
+    coef = np.empty((nP, nt, len(mx), len(my), nz), dtype=np.complex64)
+    ramp = np.zeros((nP, nt, ny, nz), dtype=np.float32)
     rows = []
     for i, P in enumerate(run.powers):
         dT = run.dT(i)
-        C = np.fft.rfftn(dT, axes=(1, 2), norm="ortho")  # over (x, y), t stays
+        work, D = field(run, i, detrend)
+        if D is not None:
+            ramp[i] = D
+
+        C = np.fft.rfftn(work, axes=(1, 2), norm="ortho")  # over (x, y), t stays
         coef[i] = C[:, mx, :, :][:, :, my, :]
 
         full = np.zeros((nt, nx, ny // 2 + 1, nz), dtype=np.complex128)
         full[:, mx[:, None], my[None, :], :] = coef[i]
         rec = np.fft.irfftn(full, s=(nx, ny), axes=(1, 2), norm="ortho")
+        if detrend:
+            rec = retrend_x(rec, ramp[i].astype(np.float64))
         err = rec - dT
 
         true_peak = dT.reshape(nt, -1).max(1)
@@ -293,6 +315,8 @@ def save_dataset(run: Run, box: dict, out: Path) -> None:
     np.savez_compressed(
         out,
         coef=coef,
+        ramp=ramp,
+        detrend=bool(detrend),
         mx=mx.astype(np.int32),
         my=my.astype(np.int32),
         kx=kx,
@@ -537,6 +561,7 @@ def plot_pareto(run: Run, acc: dict, out: Path) -> None:
 
 REPO = Path(__file__).resolve().parents[2]
 NPZ = "spectral_fft2.npz"  # the name models/spectral/train.py looks for
+NPZ_DETRENDED = "spectral_fft2_detrended.npz"
 
 
 def main() -> None:
@@ -557,6 +582,11 @@ def main() -> None:
         "--no-save", action="store_true", help="analyse only; do not write the npz"
     )
     ap.add_argument(
+        "--detrend",
+        action="store_true",
+        help="take the x-wrap ramp out before transforming, and store it alongside",
+    )
+    ap.add_argument(
         "--save-target",
         type=float,
         default=0.99999,
@@ -569,9 +599,10 @@ def main() -> None:
     a = ap.parse_args()
 
     run = load_run(a.run)
-    a.save = None if a.no_save else run.dir / NPZ
+    a.save = None if a.no_save else run.dir / (NPZ_DETRENDED if a.detrend else NPZ)
     if a.figdir is None:
-        a.figdir = REPO / "reports" / f"spectral-{run.dir.name}"
+        suffix = "-detrended" if a.detrend else ""
+        a.figdir = REPO / "reports" / f"spectral-{run.dir.name}{suffix}"
     nt, nx, ny, nz = run.shape
     d = float(run.x[1] - run.x[0])
     print(
@@ -580,7 +611,7 @@ def main() -> None:
     )
     print(f"implied FFT periods: {nx * d:.3f} x {ny * d:.3f} x {nz * d:.3f} mm\n")
 
-    acc = accumulate(run)
+    acc = accumulate(run, a.detrend)
 
     full = nx * ny * nz
     cache: dict[tuple[int, int], np.ndarray] = {}
@@ -601,7 +632,7 @@ def main() -> None:
                 continue
             ip, it = hardest_snapshot(acc, b["kx"], b["ky"])
             if (ip, it) not in cache:
-                cache[(ip, it)] = run.dT(ip)[it]
+                cache[(ip, it)] = field(run, ip, a.detrend)[0][it]
             e = reconstruct_error(cache[(ip, it)], v, b)
             where = f"{run.powers[ip]}W t={run.t[it]:.1f}s"
             print(
@@ -635,7 +666,7 @@ def main() -> None:
     print(f"figures -> {a.figdir}")
 
     if a.save:
-        save_dataset(run, box, a.save)
+        save_dataset(run, box, a.save, a.detrend)
 
 
 if __name__ == "__main__":
