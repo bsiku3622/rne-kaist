@@ -63,23 +63,35 @@ def select(score: dict) -> float:
     return score["rmse"] + abs(score["peak"])
 
 
-def optimiser_for(model, name: str, lr: float, iterations: int):
-    """Adam, or L-BFGS, and the schedule that goes with each."""
-    if name == "lbfgs":
-        # L-BFGS assumes a deterministic objective -- it builds a curvature estimate from
-        # successive gradients, and a fresh minibatch every step makes that estimate noise.
-        # `max_iter=1` keeps one inner update per outer step so the caller can resample,
-        # and strong Wolfe line search is what stops it stepping off a cliff when it does.
+HISTORY = 20  # curvature pairs L-BFGS keeps; see optimiser_for
+
+
+def optimiser_for(model, args):
+    """Adam, or L-BFGS, and the schedule that goes with each.
+
+    L-BFGS is a *deterministic* method wearing a stochastic one's interface. It approximates
+    the inverse Hessian from the last ``HISTORY`` pairs ``(s_k, y_k)``, where
+    ``y_k = grad f(x_{k+1}) - grad f(x_k)`` -- a difference that only measures curvature if
+    ``f`` is the same function at both ends. Hand it a fresh minibatch every step and ``y_k``
+    measures the sampling noise instead, and the strong-Wolfe line search, which evaluates
+    the objective several times per step, is comparing values of different functions.
+
+    So :func:`run` holds the batch still and this is where the rest of that follows from:
+    the line search may take as many inner steps as it likes (``--lbfgs-inner``) because
+    they are all on one objective, and no schedule sits on top of ``lr`` because the line
+    search sets its own step length.
+    """
+    if args.optimizer == "lbfgs":
         opt = torch.optim.LBFGS(
             model.parameters(),
-            lr=lr,
-            max_iter=1,
-            history_size=20,
+            lr=args.lr,
+            max_iter=args.lbfgs_inner,
+            history_size=HISTORY,
             line_search_fn="strong_wolfe",
         )
-        return opt, None  # a line search sets its own step length; no schedule on top
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
-    return opt, torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=iterations)
+        return opt, None
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    return opt, torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iterations)
 
 
 def run(
@@ -90,22 +102,44 @@ def run(
     truth: np.ndarray,
     args,
     payload: dict,
+    generator: torch.Generator,
 ) -> Result:
     """Train, validate on the held-out power, and leave the best checkpoint in ``entry``.
 
     ``step()`` runs one optimisation step's forward pass and returns its loss and the
     components to log. ``field()`` returns the model's dT on the full grid of the held-out
     power, which ``truth`` is measured against with :mod:`share.metrics`.
+
+    ``generator`` is the one every sampler draws from, and it is how L-BFGS gets the fixed
+    objective it needs without a single model having to know that it exists: rewind the
+    generator and ``step()`` redraws the batch it drew last time, to the point.
     """
-    opt, sched = optimiser_for(model, args.optimizer, args.lr, args.iterations)
+    opt, sched = optimiser_for(model, args)
     best = BestCheckpoint(entry.checkpoint, mode="min")
     writer = SummaryWriter(log_dir=str(entry.tensorboard))
+    lbfgs = args.optimizer == "lbfgs"
 
     print(
         f"[archive] {entry.dir.name}\n"
         f"[setup] {count_parameters(model):,} params, {args.optimizer}, lr {args.lr:g}, "
-        f"{args.iterations} iterations\n"
+        f"{args.iterations} iterations"
+        + (f", {args.lbfgs_inner} inner, batch held {args.lbfgs_cycle or args.iterations} steps"
+           if lbfgs else "")
+        + "\n"
     )
+
+    # The state that draws the batch L-BFGS is currently minimising over. Rewinding to it
+    # before every evaluation is what makes `step()` a function rather than a sample of one.
+    batch = generator.get_state() if lbfgs else None
+    seen: dict = {}
+
+    def closure():
+        generator.set_state(batch)
+        opt.zero_grad(set_to_none=True)
+        total, components = step()
+        total.backward()
+        seen["total"], seen["components"] = total.detach(), components
+        return total
 
     started = time.time()
     progress = tqdm(
@@ -115,18 +149,18 @@ def run(
     for iteration in progress:
         model.train()
 
-        if args.optimizer == "lbfgs":
-            seen: dict = {}
-
-            def closure():
-                opt.zero_grad(set_to_none=True)
-                total, components = step()
-                total.backward()
-                seen["total"], seen["components"] = total, components
-                return total
-
+        if lbfgs:
             opt.step(closure)
             total, components = seen["total"], seen["components"]
+
+            if args.lbfgs_cycle and iteration % args.lbfgs_cycle == 0:
+                # A new batch is a new objective, so every curvature pair in the history
+                # now describes a function that is no longer being minimised. Keeping them
+                # would let the old landscape steer steps on the new one, so the optimiser
+                # is rebuilt: same weights, empty history. This is the cost of not being
+                # full-batch, paid explicitly rather than absorbed as noise.
+                batch = generator.get_state()
+                opt, _ = optimiser_for(model, args)
         else:
             opt.zero_grad(set_to_none=True)
             total, components = step()

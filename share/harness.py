@@ -37,6 +37,16 @@ from share.grid import load_run
 
 AMBIENT = 298.0
 
+# An Adam step is one gradient evaluation; an L-BFGS step is `--lbfgs-inner` of them plus
+# whatever the line search costs. So the two are given the same *gradient* budget rather
+# than the same iteration count, which would be comparing an apple to twenty oranges.
+# The learning rate follows the same logic: a strong-Wolfe line search picks its own step
+# length, and `lr` is only the initial guess it is allowed to shrink from.
+DEFAULTS = {
+    "adam": dict(iterations=20000, lr=1e-3, log_every=250),
+    "lbfgs": dict(iterations=1000, lr=1.0, log_every=25),
+}
+
 
 def base_parser(name: str, doc: str) -> argparse.ArgumentParser:
     """The arguments every model takes, whatever it is inside."""
@@ -47,14 +57,22 @@ def base_parser(name: str, doc: str) -> argparse.ArgumentParser:
         help="the power kept out of training entirely, and scored on. Not a random "
              "sample of points from powers the model has already seen.",
     )
-    ap.add_argument("--iterations", type=int, default=20000)
-    ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument(
         "--optimizer", choices=("adam", "lbfgs"), default="adam",
-        help="lbfgs runs one inner update per step with a strong-Wolfe line search, so "
-             "a fresh minibatch each step does not poison its curvature estimate",
+        help="lbfgs holds the batch still so its curvature estimate and its line search "
+             "have one objective to work on; see share/training.optimiser_for",
     )
-    ap.add_argument("--log-every", type=int, default=250, help="validation cadence")
+    ap.add_argument("--iterations", type=int, default=None,
+                    help="default: 20000 (adam), 1000 (lbfgs) -- the same gradient budget")
+    ap.add_argument("--lr", type=float, default=None,
+                    help="default: 1e-3 (adam), 1.0 (lbfgs)")
+    ap.add_argument("--lbfgs-inner", type=int, default=20,
+                    help="inner updates per step. Free to be > 1: the objective is fixed")
+    ap.add_argument("--lbfgs-cycle", type=int, default=25,
+                    help="steps a batch is held for. When it turns over the curvature "
+                         "history is dropped with it. 0 holds one batch for the whole run")
+    ap.add_argument("--log-every", type=int, default=None,
+                    help="validation cadence; default: 250 (adam), 25 (lbfgs)")
     ap.add_argument("--scalar-every", type=int, default=25)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", type=str, default=None)
@@ -100,6 +118,10 @@ class Setup:
     """What every model needs before it can build anything, gathered once."""
 
     def __init__(self, a):
+        for key, value in DEFAULTS[a.optimizer].items():
+            if getattr(a, key) is None:
+                setattr(a, key, value)
+
         self.args = a
         self.device = torch.device(a.device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.dtype = torch.float64 if a.double else torch.float32
@@ -181,6 +203,6 @@ def go(name, s: Setup, model, architecture, agent_cls, step, extra=None) -> None
         "holdout": a.holdout,
     }
     result = training.run(
-        entry, model, step, lambda: predict(a.holdout), s.truth, a, payload
+        entry, model, step, lambda: predict(a.holdout), s.truth, a, payload, s.generator
     )
     finish(name, a, run, model, architecture, predict, s.truth, entry, result, extra)
