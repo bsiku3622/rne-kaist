@@ -32,7 +32,7 @@ error come free from Parseval; peak error, worst pointwise error and the
 Dirichlet violation at the bottom face need an actual reconstruction, so those are
 measured only for the chosen boxes.
 
-The npz lands next to the data it came from, as ``data/<run>/spectral_fft2.npz``;
+The npz lands next to the data it came from, as ``data/<run>/spectral_fft2_e<target>.npz``;
 the figures land in ``reports/spectral-<run>/``, because they are what justifies
 the mode budget and ``data/`` is not tracked.
 
@@ -54,7 +54,8 @@ from scipy.fft import dctn, idctn
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from share.grid import T_AMB, Run, detrend_x, load_run, retrend_x
+from share.grid import Run, detrend_x, load_run
+from share.spectral import best_box, build, fold, npz_name, spectrum_shape
 
 VARIANTS = ("fft3", "fft2", "dct")
 
@@ -92,21 +93,6 @@ def inverse(C: np.ndarray, variant: str) -> np.ndarray:
     raise ValueError(variant)
 
 
-def fold(P: np.ndarray, axis: int) -> np.ndarray:
-    """Sum |C|^2 over +m and -m, leaving |m| = 0 .. N//2 along ``axis``.
-
-    N is odd on every axis here, so there is no Nyquist bin to double-count:
-    index 0 is m = 0, indices 1..N//2 are m = +1..+N//2, and the reversed tail
-    is m = -1..-N//2.
-    """
-    P = np.moveaxis(P, axis, 0)
-    half = P.shape[0] // 2
-    out = np.empty((half + 1, *P.shape[1:]), dtype=P.dtype)
-    out[0] = P[0]
-    out[1:] = P[1 : half + 1] + P[: half : -1]
-    return np.moveaxis(out, 0, axis)
-
-
 def spectrum(dT: np.ndarray, variant: str) -> np.ndarray:
     """|C|^2 binned by (|mx|, |my|, kz), where kz is |mz| for FFT and j for DCT."""
     P = np.abs(transform(dT, variant)) ** 2
@@ -115,21 +101,6 @@ def spectrum(dT: np.ndarray, variant: str) -> np.ndarray:
     elif variant == "fft3":
         P = fold(P, 2)
     return fold(fold(P, 0), 1)
-
-
-def dof(variant: str, nz: int, kx: np.ndarray, ky: np.ndarray, kz: np.ndarray):
-    """Stored real numbers for the box |mx| <= kx, |my| <= ky, and kz in z.
-
-    Hermitian symmetry makes half the complex coefficients redundant, so a box of
-    n complex coefficients costs n real numbers, not 2n. In ``fft2`` the whole z
-    grid is stored; in ``dct`` the z coefficients are real to begin with.
-    """
-    plane = (2 * kx + 1) * (2 * ky + 1)
-    if variant == "fft3":
-        return plane * (2 * kz + 1)
-    if variant == "fft2":
-        return plane * nz
-    return plane * (kz + 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -188,34 +159,6 @@ def accumulate(run: Run, detrend: bool = False) -> dict:
     }
 
 
-def spectrum_shape(variant: str, nx: int, ny: int, nz: int) -> tuple[int, int, int]:
-    kz = {"fft3": nz // 2 + 1, "fft2": 1, "dct": nz}[variant]
-    return nx // 2 + 1, ny // 2 + 1, kz
-
-
-def best_box(energy: np.ndarray, total: np.ndarray, variant: str, nz: int, target: float):
-    """Cheapest box (fewest stored reals) that retains ``target`` for *every* power."""
-    retained = energy.cumsum(1).cumsum(2).cumsum(3) / total[:, None, None, None]
-    worst = retained.min(axis=0)
-    kx, ky, kz = np.meshgrid(*(np.arange(n) for n in worst.shape), indexing="ij")
-    cost = dof(variant, nz, kx, ky, kz)
-    ok = worst >= target
-    if not ok.any():
-        return None
-    flat = np.where(ok.ravel(), cost.ravel(), np.iinfo(np.int64).max)
-    i = int(flat.argmin())
-    per_power = retained.reshape(len(total), -1)[:, i]
-    return {
-        "kx": int(kx.ravel()[i]),
-        "ky": int(ky.ravel()[i]),
-        "kz": int(kz.ravel()[i]),
-        "dof": int(cost.ravel()[i]),
-        "retained": float(worst.ravel()[i]),
-        "per_power": per_power,
-        "pooled": float(per_power @ total / total.sum()),
-    }
-
-
 def hardest_snapshot(acc: dict, kx: int, ky: int) -> tuple[int, int]:
     """The snapshot that keeps least of its own energy inside the (kx, ky) box."""
     cum = acc["snap"].cumsum(2).cumsum(3)[:, :, kx, ky]
@@ -250,93 +193,6 @@ def reconstruct_error(dT: np.ndarray, variant: str, box: dict) -> dict:
         "peak_rel": float((rec.max() - dT.max()) / dT.max() * 100),
         "bottom": float(np.abs(rec[:, :, 0]).max()),  # Dirichlet says this is 0
     }
-
-
-# --------------------------------------------------------------------------- #
-# dataset
-# --------------------------------------------------------------------------- #
-
-
-def save_dataset(run: Run, box: dict, out: Path, detrend: bool = False) -> None:
-    """Write the truncated ``fft2`` coefficients, and check they reconstruct.
-
-    Stored as a real-input FFT over ``(x, y)``: ``y`` keeps only its non-negative
-    wavenumbers, since ``C(-kx, -ky) = conj(C(kx, ky))`` makes the rest redundant.
-    ``z`` is kept whole. To reconstruct, scatter ``coef`` back into a zero array of
-    shape ``(nx, ny // 2 + 1, nz)`` at the rows named by ``mx``, then
-
-        dT = np.fft.irfftn(full, s=(nx, ny), axes=(0, 1), norm="ortho")
-        T  = dT + T_amb
-
-    Under ``--detrend`` the coefficients are those of the *residual* -- the field with
-    the x-wrap ramp taken out -- and ``ramp`` holds the ``(nt, ny, nz)`` end-face
-    mismatch that was removed, so the last step becomes ``retrend_x(dT, ramp) + T_amb``.
-    That costs ``ny * nz`` extra numbers a snapshot and buys back the high wavenumbers
-    the cliff was filling with an artefact.
-    """
-    nt, nx, ny, nz = run.shape
-    kx, ky = box["kx"], box["ky"]
-    mx = np.r_[np.arange(kx + 1), np.arange(-kx, 0)]  # 0..kx, -kx..-1
-    my = np.arange(ky + 1)
-
-    nP = len(run.powers)
-    coef = np.empty((nP, nt, len(mx), len(my), nz), dtype=np.complex64)
-    ramp = np.zeros((nP, nt, ny, nz), dtype=np.float32)
-    rows = []
-    for i, P in enumerate(run.powers):
-        dT = run.dT(i)
-        work, D = field(run, i, detrend)
-        if D is not None:
-            ramp[i] = D
-
-        C = np.fft.rfftn(work, axes=(1, 2), norm="ortho")  # over (x, y), t stays
-        coef[i] = C[:, mx, :, :][:, :, my, :]
-
-        full = np.zeros((nt, nx, ny // 2 + 1, nz), dtype=np.complex128)
-        full[:, mx[:, None], my[None, :], :] = coef[i]
-        rec = np.fft.irfftn(full, s=(nx, ny), axes=(1, 2), norm="ortho")
-        if detrend:
-            rec = retrend_x(rec, ramp[i].astype(np.float64))
-        err = rec - dT
-
-        true_peak = dT.reshape(nt, -1).max(1)
-        hot = true_peak > 1.0  # t = 0 is uniformly ambient, so it has no peak
-        peak_rel = (rec.reshape(nt, -1).max(1)[hot] - true_peak[hot]) / true_peak[hot]
-        rows.append(
-            (
-                P,
-                float(np.sqrt((err**2).mean())),
-                float(np.abs(err).max()),
-                float(np.abs(rec[:, :, :, 0]).max()),  # Dirichlet says this is 0
-                float(peak_rel[np.abs(peak_rel).argmax()] * 100),
-            )
-        )
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        out,
-        coef=coef,
-        ramp=ramp,
-        detrend=bool(detrend),
-        mx=mx.astype(np.int32),
-        my=my.astype(np.int32),
-        kx=kx,
-        ky=ky,
-        powers=run.powers.astype(np.float32),
-        t=run.t.astype(np.float32),
-        x=run.x.astype(np.float32),
-        y=run.y.astype(np.float32),
-        z=run.z.astype(np.float32),
-        grid=np.array([nx, ny, nz], dtype=np.int32),
-        T_amb=np.float32(T_AMB),
-        norm="ortho",
-    )
-
-    print(f"\nsaved {out}  {coef.shape}  {out.stat().st_size / 1e6:.1f} MB")
-    print("errors are over every snapshot of that power; peak is the worst one\n")
-    print(f"{'P':>5} {'RMSE':>8} {'Linf':>8} {'bottom':>8} {'peak':>9}")
-    for P, rmse, linf, bottom, peak in rows:
-        print(f"{P:>5} {rmse:>7.3f}K {linf:>7.1f}K {bottom:>7.2f}K {peak:>8.2f}%")
 
 
 # --------------------------------------------------------------------------- #
@@ -561,8 +417,6 @@ def plot_pareto(run: Run, acc: dict, out: Path) -> None:
 
 
 REPO = Path(__file__).resolve().parents[2]
-NPZ = "spectral_fft2.npz"  # the name models/spectral/train.py looks for
-NPZ_DETRENDED = "spectral_fft2_detrended.npz"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -602,7 +456,7 @@ def main(argv: list[str] | None = None) -> None:
     a = ap.parse_args(argv)
 
     run = load_run(a.run)
-    a.save = None if a.no_save else run.dir / (NPZ_DETRENDED if a.detrend else NPZ)
+    a.save = None if a.no_save else run.dir / npz_name(a.save_target, a.detrend)
     if a.figdir is None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M")
         suffix = "-detrended" if a.detrend else ""
@@ -670,7 +524,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"figures -> {a.figdir}")
 
     if a.save:
-        save_dataset(run, box, a.save, a.detrend)
+        build(run, box, a.save, detrend=a.detrend, energy_target=a.save_target)
 
 
 if __name__ == "__main__":

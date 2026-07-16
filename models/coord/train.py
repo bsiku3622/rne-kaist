@@ -28,6 +28,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from share import archiving, metrics
 from share.grid import load_run
+from share.spectral import npz_name
 
 from .model import CoordMLP
 from .visualize import predict, render
@@ -108,7 +109,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  {wall:.0f} s\n")
 
     model.eval()
-    npz_path = run.dir / "spectral_fft2.npz"
+    npz_path = run.dir / npz_name(0.9999)  # the canonical spectral box, for the overlay
     npz = np.load(npz_path) if npz_path.is_file() else None
     render(model, run, test_p, entry.figures, a.times, npz)
 

@@ -24,6 +24,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from share import plotting
 from share.grid import load_run
+from share.spectral import npz_name
 
 from .model import CoordMLP
 
@@ -89,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
     model.load_state_dict(ckpt["state"])
     model.eval()
 
-    npz_path = run.dir / "spectral_fft2.npz"
+    npz_path = run.dir / npz_name(0.9999)  # the canonical spectral box, for the overlay
     npz = np.load(npz_path) if npz_path.is_file() else None
     render(model, run, ckpt["test_p"], a.entry / "figures", a.times, npz)
     print(f"figures -> {a.entry / 'figures'}")

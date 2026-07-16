@@ -21,18 +21,22 @@ import torch
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from share import plotting
+from share import plotting, spectral
 from share.grid import load_run
 
-from .model import SpectralMLP, derotate_phase, reconstruct
+from .model import SpectralMLP
 
 
-def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, vel: float,
+def render(model, ds, run, test_p: int, figdir: Path, times, derotate: bool, vel: float,
            n_coef: int | None = None, ramp_shape=None):
-    """Every figure this model is judged by, written into ``figdir``."""
-    coef, powers, t = npz["coef"], npz["powers"], npz["t"]
+    """Every figure this model is judged by, written into ``figdir``.
+
+    ``ds`` is the :class:`~share.spectral.SpectralDataset` the model was fitted to; it
+    carries the box, the de-rotation phase, and the inverse transform, so this only has
+    to run the network and hand the coefficients back to it.
+    """
+    coef, powers, t = ds.coef, ds.powers, ds.t
     nP, nt = coef.shape[:2]
-    meta = {k: npz[k] for k in ("mx", "my", "grid")}
     power = int(powers[test_p])
 
     X = np.stack(
@@ -45,21 +49,18 @@ def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, ve
         ).reshape(nP * nt, -1)
     if n_coef is None:
         n_coef = flat.shape[1]
-    c = flat[:, :n_coef].reshape(nP, nt, *coef.shape[2:], 2)
+    c = flat[:, :n_coef].reshape(nP, nt, *ds.shape, 2)
     pred = c[..., 0] + 1j * c[..., 1]
     if derotate:
-        pred = pred / derotate_phase(meta["mx"], run, t, vel)[None, :, :, None, None]
+        pred = pred / ds.spin(t, vel)[None, :, :, None, None]
 
-    ramp = npz["ramp"] if ramp_shape is not None else None
     pred_ramp = (
         flat[:, n_coef:].reshape(nP, nt, *ramp_shape) if ramp_shape is not None else None
     )
 
     truth = run.dT(test_p)
-    floor = reconstruct(coef[test_p], meta, None if ramp is None else ramp[test_p])
-    mine = reconstruct(
-        pred[test_p], meta, None if pred_ramp is None else pred_ramp[test_p]
-    )
+    floor = ds.floor(test_p)
+    mine = ds.reconstruct(pred[test_p], None if pred_ramp is None else pred_ramp[test_p])
 
     # where the raw coefficient series starts aliasing -- the reason the spin is
     # divided out analytically rather than left for the network to find. It is not a
@@ -70,7 +71,7 @@ def render(model, npz, run, test_p: int, figdir: Path, times, derotate: bool, ve
     plotting.planes(truth, mine, run, power, figdir / "field.png", "spectral MLP")
     plotting.scanline(truth, mine, run, power, times, figdir / "scanline.png",
                       "spectral MLP", floor=floor)
-    plotting.signal(coef[test_p], pred[test_p], meta["mx"], power,
+    plotting.signal(coef[test_p], pred[test_p], ds.mx, power,
                     figdir / "signal.png", nyquist=nyquist)
     return truth, floor, mine
 
@@ -82,16 +83,20 @@ def main(argv: list[str] | None = None) -> None:
     a = ap.parse_args(argv)
 
     ckpt = torch.load(a.entry / "checkpoint.pt", map_location="cpu", weights_only=False)
+    cfg = ckpt["config"]
     run = load_run(Path(ckpt["run_dir"]))
-    npz = np.load(run.dir / "spectral_fft2.npz")
+    ds = spectral.load(run.dir, cfg.get("energy", 0.9999), cfg.get("detrend", False))
 
     model = SpectralMLP(**ckpt["architecture"])
     model.load_state_dict(ckpt["state"])
     model.set_normalisation(ckpt["mu"], ckpt["sd"])
     model.eval()
 
-    render(model, npz, run, ckpt["test_p"], a.entry / "figures", a.times,
-           ckpt["config"]["derotate"], ckpt["config"]["vel"])
+    # the checkpoint's box may carry a ramp; split it off exactly as training did
+    n_coef = 2 * int(np.prod(ds.shape))
+    ramp_shape = ds.ramp.shape[2:] if ds.ramp is not None else None
+    render(model, ds, run, ckpt["test_p"], a.entry / "figures", a.times,
+           cfg["derotate"], cfg["vel"], n_coef=n_coef, ramp_shape=ramp_shape)
     print(f"figures -> {a.entry / 'figures'}")
 
 
