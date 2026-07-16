@@ -23,11 +23,10 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from share import archiving
+from share import archiving, tracking
 from share.grid import load_run
 from tqdm import tqdm
 
@@ -354,6 +353,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w-pde", type=float, default=1.0)
     parser.add_argument("--w-bc", type=float, default=1.0)
     parser.add_argument("--w-ic", type=float, default=1.0)
+    tracking.add_tracker_args(parser)
     return parser.parse_args()
 
 
@@ -404,9 +404,10 @@ def main(argv: list[str] | None = None) -> None:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.iterations)
 
     entry = archiving.open_entry("deeponet", run, args.tag or args.architecture)
-    writer = SummaryWriter(log_dir=str(entry.tensorboard))
-
     parameter_count = sum(p.numel() for p in model.parameters())
+    tracker = tracking.make_tracker(
+        entry, args, config={**vars(args), "params": parameter_count}
+    )
     print(f"[archive] {entry.dir.name}")
     print(f"[setup] device={device} dtype={dtype} params={parameter_count}")
     print(f"[setup] lower={domain.lower.tolist()} upper={domain.upper.tolist()}")
@@ -449,17 +450,17 @@ def main(argv: list[str] | None = None) -> None:
         # .item() synchronises with the GPU, so only pull the scalars we log.
         if iteration % args.scalar_every == 0 or iteration == 1:
             total_value = total.detach().item()
-            writer.add_scalar("loss/total", total_value, iteration)
+            tracker.add_scalar("loss/total", total_value, iteration)
             for name, value in components.items():
-                writer.add_scalar(f"loss/{name}", value.detach().item(), iteration)
-            writer.add_scalar("lr", scheduler.get_last_lr()[0], iteration)
+                tracker.add_scalar(f"loss/{name}", value.detach().item(), iteration)
+            tracker.add_scalar("lr", scheduler.get_last_lr()[0], iteration)
             progress.set_postfix(loss=f"{total_value:.3e}", best=f"{best_rmse:.1f}K")
 
         if iteration % args.log_every == 0 or iteration == 1:
             model.eval()
             rmse, worst = evaluate(model, val_coords, val_power, val_temperature)
-            writer.add_scalar("val/rmse", rmse, iteration)
-            writer.add_scalar("val/max_error", worst, iteration)
+            tracker.add_scalar("val/rmse", rmse, iteration)
+            tracker.add_scalar("val/max_error", worst, iteration)
 
             parts = " ".join(
                 f"{name}={value.detach().item():.3e}" for name, value in components.items()
@@ -486,7 +487,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
 
     progress.close()
-    writer.add_hparams(
+    tracker.add_hparams(
         {
             "lr": args.lr,
             "iterations": args.iterations,
@@ -500,7 +501,7 @@ def main(argv: list[str] | None = None) -> None:
         },
         {"hparam/val_rmse": best_rmse},
     )
-    writer.close()
+    tracker.close()
     print(f"[done] best val RMSE {best_rmse:.3f} K")
 
     # `visualize.py` owns the figure conventions for this model, so render through it

@@ -23,11 +23,17 @@ python simulation/heat_torch.py --powers 100 200 300 400 500 600 700 --ele_size 
 python train.py --list
 python train.py gpidon --run data/torch_20260710-122446_100_250_0.25 --holdout 175
 python train.py mlp    --run data/... --optimizer lbfgs --lr 1
+python train.py mlp    --run data/... --logger wandb    # stream to W&B instead of TensorBoard
 python train.py gdon   --help
 
 tensorboard --logdir runs        # what is training now
 tensorboard --logdir archive     # everything ever trained
 ```
+
+Every run's scalars go to TensorBoard by default. `--logger wandb` streams them to a
+Weights & Biases project instead (`pip install wandb` first; `--wandb-project`,
+`--wandb-entity`, `--wandb-mode {online,offline,disabled}` to steer it). The choice is
+one flag, resolved in `share/tracking.py` — the same way `--optimizer` is.
 
 `models/fmlp` needs its Fourier basis built first:
 

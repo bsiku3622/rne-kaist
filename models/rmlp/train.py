@@ -22,11 +22,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from share import archiving, metrics
+from share import archiving, metrics, tracking
 from share.grid import load_run
 from share.spectral import npz_name
 
@@ -48,6 +47,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--times", type=float, nargs="+", default=[0.5, 1.5, 3.0])
     ap.add_argument("--tag", type=str, default=None, help="suffix on the archive entry")
     ap.add_argument("--lock", action="store_true", help="mark the archive entry read-only")
+    tracking.add_tracker_args(ap)
     a = ap.parse_args(argv)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -75,8 +75,8 @@ def main(argv: list[str] | None = None) -> None:
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.steps)
 
     entry = archiving.open_entry(MODEL, run, a.tag)
-    writer = SummaryWriter(log_dir=str(entry.tensorboard))
     n_par = sum(q.numel() for q in model.parameters())
+    tracker = tracking.make_tracker(entry, a, config={**vars(a), "params": n_par})
     n_pts = len(train_p) * nt * nx * ny * nz
     print(
         f"[archive] {entry.dir.name}\n"
@@ -101,11 +101,11 @@ def main(argv: list[str] | None = None) -> None:
         opt.step()
         sched.step()
         if step % 100 == 0 or step == a.steps - 1:
-            writer.add_scalar("loss/train", loss.item(), step)
+            tracker.add_scalar("loss/train", loss.item(), step)
             if step % 4000 == 0 or step == a.steps - 1:
                 print(f"  step {step:>6}  train {loss.item():.3e}")
     wall = time.time() - t0
-    writer.close()
+    tracker.close()
     print(f"  {wall:.0f} s\n")
 
     model.eval()

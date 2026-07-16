@@ -31,7 +31,7 @@ import torch
 REPO = Path(__file__).resolve().parent.parent
 sys.path.append(str(REPO))
 
-from share import archiving, figures, metrics, plotting, training
+from share import archiving, figures, metrics, plotting, tracking, training
 from share.corpus import MM, SimulationDataset
 from share.grid import load_run
 
@@ -74,6 +74,7 @@ def base_parser(name: str, doc: str) -> argparse.ArgumentParser:
     ap.add_argument("--log-every", type=int, default=None,
                     help="validation cadence; default: 250 (adam), 25 (lbfgs)")
     ap.add_argument("--scalar-every", type=int, default=25)
+    tracking.add_tracker_args(ap)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", type=str, default=None)
     ap.add_argument("--double", action="store_true", help="run in float64")

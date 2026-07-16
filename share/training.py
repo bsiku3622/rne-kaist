@@ -30,10 +30,9 @@ from typing import Callable
 
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from share import archiving, metrics
+from share import archiving, metrics, tracking
 from share.checkpoints import BestCheckpoint, count_parameters
 
 StepFn = Callable[[], tuple[torch.Tensor, dict[str, torch.Tensor]]]
@@ -129,8 +128,9 @@ def run(
     """
     opt, sched = optimiser_for(model, args)
     best = BestCheckpoint(entry.checkpoint, mode="min")
-    writer = SummaryWriter(log_dir=str(entry.tensorboard))
-    archiving.live_link(entry)  # the event file exists now, so TensorBoard can be shown it
+    tracker = tracking.make_tracker(
+        entry, args, config={**vars(args), "params": count_parameters(model)}
+    )
     lbfgs = args.optimizer == "lbfgs"
 
     print(
@@ -184,19 +184,19 @@ def run(
             sched.step()
 
         if iteration % args.scalar_every == 0 or iteration == 1:
-            writer.add_scalar("loss/total", total.detach().item(), iteration)
+            tracker.add_scalar("loss/total", total.detach().item(), iteration)
             for name, value in components.items():
-                writer.add_scalar(f"loss/{name}", float(value), iteration)
+                tracker.add_scalar(f"loss/{name}", float(value), iteration)
             if sched is not None:
-                writer.add_scalar("lr", sched.get_last_lr()[0], iteration)
+                tracker.add_scalar("lr", sched.get_last_lr()[0], iteration)
             progress.set_postfix(loss=f"{total.detach().item():.3e}", best=f"{best.best:.2f}")
 
         if iteration % args.log_every == 0 or iteration == args.iterations:
             model.eval()
             score = metrics.score(field(), truth)
             for name, value in score.items():
-                writer.add_scalar(f"val/{name}", value, iteration)
-            writer.add_scalar("val/select", select(score), iteration)
+                tracker.add_scalar(f"val/{name}", value, iteration)
+            tracker.add_scalar("val/select", select(score), iteration)
 
             progress.write(
                 f"[{iteration:6d}] loss={total.detach().item():.4e} | "
@@ -207,7 +207,7 @@ def run(
                 progress.write(f"{'':>9}  ^ best so far")
 
     progress.close()
-    writer.close()
+    tracker.close()
     wall = time.time() - started
     print(f"\n[done] best select {best.best:.3f} at step {best.step}  ({wall:.0f} s)")
     return Result(best=best.best, best_step=best.step or 0, wall_s=wall)

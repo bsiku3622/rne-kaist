@@ -36,11 +36,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from share import archiving, metrics, spectral
+from share import archiving, metrics, spectral, tracking
 from share.checkpoints import BestCheckpoint
 from share.grid import load_run
 
@@ -94,6 +93,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--times", type=float, nargs="+", default=[0.5, 1.5, 3.0])
     ap.add_argument("--tag", type=str, default=None, help="suffix on the archive entry")
     ap.add_argument("--lock", action="store_true", help="mark the archive entry read-only")
+    tracking.add_tracker_args(ap)
     a = ap.parse_args(argv)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -142,8 +142,8 @@ def main(argv: list[str] | None = None) -> None:
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
 
     entry = archiving.open_entry(MODEL, run, a.tag)
-    writer = SummaryWriter(log_dir=str(entry.tensorboard))
     n_par = sum(p.numel() for p in model.parameters())
+    tracker = tracking.make_tracker(entry, a, config={**vars(a), "params": n_par})
     print(
         f"[archive] {entry.dir.name}\n"
         f"MLP 2 -> {' -> '.join([str(a.width)] * a.depth)} -> {Y.shape[1]}   "
@@ -170,8 +170,8 @@ def main(argv: list[str] | None = None) -> None:
         if ep % 100 == 0 or ep == a.epochs - 1:
             with torch.no_grad():
                 val = ((model(Xt[~trt]) - Yt[~trt]) ** 2).mean().item()
-            writer.add_scalar("loss/train", loss.item(), ep)
-            writer.add_scalar("loss/holdout", val, ep)
+            tracker.add_scalar("loss/train", loss.item(), ep)
+            tracker.add_scalar("loss/holdout", val, ep)
             best.update(
                 val,
                 {
@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> None:
             if ep % 4000 == 0 or ep == a.epochs - 1:
                 print(f"  epoch {ep:>6}  train {loss.item():.3e}  held-out {val:.3e}")
     wall = time.time() - t0
-    writer.close()
+    tracker.close()
     print(f"  {wall:.0f} s   best held-out {best.best:.3e} at epoch {best.step}\n")
 
     # score and archive the best checkpoint, not the final weights
