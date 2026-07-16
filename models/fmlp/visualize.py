@@ -1,4 +1,4 @@
-"""Render a trained spectral model against the run it was fitted to.
+"""Render a trained fmlp model against the run it was fitted to.
 
 Importable (``train.py`` calls :func:`render` on the way out, so every run
 archives its own figures) and runnable on its own against an archived checkpoint.
@@ -24,7 +24,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from share import plotting, spectral
 from share.grid import load_run
 
-from .model import SpectralMLP
+from .model import FourierMLP
 
 
 def render(model, ds, run, test_p: int, figdir: Path, times, derotate: bool, vel: float,
@@ -68,9 +68,9 @@ def render(model, ds, run, test_p: int, figdir: Path, times, derotate: bool, vel
     Lx = run.shape[1] * run.spacing
     nyquist = 0.5 / (run.snap_dt * vel / Lx)
 
-    plotting.planes(truth, mine, run, power, figdir / "field.png", "spectral MLP")
+    plotting.planes(truth, mine, run, power, figdir / "field.png", "fmlp")
     plotting.scanline(truth, mine, run, power, times, figdir / "scanline.png",
-                      "spectral MLP", floor=floor)
+                      "fmlp", floor=floor)
     plotting.signal(coef[test_p], pred[test_p], ds.mx, power,
                     figdir / "signal.png", nyquist=nyquist)
     return truth, floor, mine
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> None:
     run = load_run(Path(ckpt["run_dir"]))
     ds = spectral.load(run.dir, cfg.get("energy", 0.9999), cfg.get("detrend", False))
 
-    model = SpectralMLP(**ckpt["architecture"])
+    model = FourierMLP(**ckpt["architecture"])
     model.load_state_dict(ckpt["state"])
     model.set_normalisation(ckpt["mu"], ckpt["sd"])
     model.eval()

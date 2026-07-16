@@ -521,7 +521,7 @@ def main(argv: list[str] | None = None) -> None:
             "wall_s": round(time.time() - started, 1),
             "best_val_rmse_K": best_rmse,
             "note": "validation is a random 10%% of points across every power, not a "
-                    "held-out power -- not comparable with models/spectral or models/coord",
+                    "held-out power -- not comparable with models/fmlp or models/rmlp",
         },
         lock=args.lock,
     )

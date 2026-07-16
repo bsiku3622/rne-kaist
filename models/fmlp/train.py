@@ -24,7 +24,7 @@ DC term.
 
 Example::
 
-    python models/spectral/train.py --run data/20260710_132221_powersweep_gpu --derotate
+    python models/fmlp/train.py --run data/20260710_132221_powersweep_gpu --derotate
 """
 
 from __future__ import annotations
@@ -44,10 +44,10 @@ from share import archiving, metrics, spectral
 from share.checkpoints import BestCheckpoint
 from share.grid import load_run
 
-from .model import SpectralMLP
+from .model import FourierMLP
 from .visualize import render
 
-MODEL = "spectral"
+MODEL = "fmlp"
 
 
 def split(flat, nP, nt, shape, n_coef, ramp_shape):
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> None:
 
     torch.manual_seed(0)
     arch = dict(n_out=Y.shape[1], width=a.width, depth=a.depth)
-    model = SpectralMLP(**arch).to(dev)
+    model = FourierMLP(**arch).to(dev)
     model.set_normalisation(mu, sd)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)

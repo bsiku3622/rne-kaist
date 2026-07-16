@@ -1,6 +1,6 @@
 """The network, and nothing else.
 
-:class:`SpectralMLP` is three dense layers that map ``(P, t)`` -- two numbers -- to
+:class:`FourierMLP` is three dense layers that map ``(P, t)`` -- two numbers -- to
 every stored Fourier coefficient of a snapshot at once. That is the whole model; what
 makes it work is not the architecture but *what it is asked to predict*, and that --
 the coefficient dataset, its reconstruction back to Kelvin, and the de-rotation that
@@ -15,7 +15,7 @@ import torch
 from torch import nn
 
 
-class SpectralMLP(nn.Module):
+class FourierMLP(nn.Module):
     """(P, t) -> every stored Fourier coefficient, as interleaved (Re, Im).
 
     The output layer is 99.6% of the weights, which sounds alarming and is not: the

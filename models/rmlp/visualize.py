@@ -1,6 +1,6 @@
 """Render a trained coordinate model against the run it was fitted to.
 
-Same three figures as ``models/spectral``, deliberately, so the two can be laid
+Same three figures as ``models/fmlp``, deliberately, so the two can be laid
 side by side. There is no truncation floor here -- this model predicts the field
 directly, so nothing was thrown away before it started and the error is all its own.
 
@@ -26,7 +26,7 @@ from share import plotting
 from share.grid import load_run
 from share.spectral import npz_name
 
-from .model import CoordMLP
+from .model import RealMLP
 
 CHUNK = 1 << 21
 
@@ -66,8 +66,8 @@ def render(model, run, test_p: int, figdir: Path, times, npz=None):
     truth = run.dT(test_p)
     mine = predict(model, run, power).astype(np.float64)
 
-    plotting.planes(truth, mine, run, power, figdir / "field.png", "coord MLP")
-    plotting.scanline(truth, mine, run, power, times, figdir / "scanline.png", "coord MLP")
+    plotting.planes(truth, mine, run, power, figdir / "field.png", "rmlp")
+    plotting.scanline(truth, mine, run, power, times, figdir / "scanline.png", "rmlp")
 
     if npz is not None:
         # read this model's own field on the modes the spectral dataset kept
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> None:
 
     ckpt = torch.load(a.entry / "checkpoint.pt", map_location="cpu", weights_only=False)
     run = load_run(Path(ckpt["run_dir"]))
-    model = CoordMLP(**ckpt["architecture"])
+    model = RealMLP(**ckpt["architecture"])
     model.load_state_dict(ckpt["state"])
     model.eval()
 

@@ -38,7 +38,7 @@ the mode budget and ``data/`` is not tracked.
 
 Example::
 
-    python models/spectral/dataset.py --run data/20260710_132221_powersweep_gpu
+    python models/fmlp/dataset.py --run data/20260710_132221_powersweep_gpu
 """
 
 from __future__ import annotations

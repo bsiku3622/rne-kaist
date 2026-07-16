@@ -19,7 +19,7 @@ Only :meth:`BaseAgent.predict_at` is abstract. ``predict_of`` is derived from it
 here by evaluating the reconstruction grid, so a new model gets the volumetric
 view for free and the two can never disagree.
 
-A model may run the other way. ``models/spectral`` returns the coefficients of the
+A model may run the other way. ``models/fmlp`` returns the coefficients of the
 whole field in one pass, so the volume is *its* primitive and a single point costs
 exactly as much as all 1.27 million of them; it overrides ``predict_of`` with the
 direct route and derives ``predict_at`` by sampling the reconstruction. Either end

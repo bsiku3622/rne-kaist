@@ -29,11 +29,11 @@ tensorboard --logdir runs        # what is training now
 tensorboard --logdir archive     # everything ever trained
 ```
 
-`models/spectral` needs its Fourier basis built first:
+`models/fmlp` needs its Fourier basis built first:
 
 ```powershell
-python models/spectral/dataset.py --run data/... [--detrend]
-python models/spectral/train.py   --run data/... --derotate
+python models/fmlp/dataset.py --run data/... [--detrend]
+python models/fmlp/train.py   --run data/... --derotate
 ```
 
 ## Layout
@@ -60,17 +60,18 @@ python models/spectral/train.py   --run data/... --derotate
 | `gdon` | a DeepONet with the gaussian gate | data |
 | `gpidon` | both | data + PDE + BC + IC |
 | `cmlp` `cgmlp` `cpimlp` | **controls**: the same networks with the laser power removed | — |
-| `coord` | `(P, t, z, y, x) -> T` | data |
+| `rmlp` | `(P, t, z, y, x) -> T`, the whole field in real space | data |
 | `deeponet` | branch/trunk, with the gaussian trunk feature | data + PDE + BC + IC |
-| `spectral` | `(P, t) -> the field's spatial Fourier coefficients` | data |
+| `fmlp` | `(P, t) -> the field's spatial Fourier coefficients` | data |
 
 The **controls** are the floor. The same `(t, z, y, x)` carries a different temperature at
 every power, so a network that cannot see `P` can do no better than the mean over the
 sweep. Any model that fails to beat them has learned nothing about the laser. (One did.)
 
-`spectral` is the only model that is not a network over coordinates. It predicts the
+`fmlp` is the only model that is not a network over coordinates. It predicts the
 coefficients of the whole field at once, so a forward pass returns a volume rather than a
-point — see `models/spectral/model.py`.
+point — see `models/fmlp/model.py`. Its real-space twin `rmlp` learns the same volume the
+direct way, so the two isolate what the Fourier basis is worth.
 
 ## share/
 
@@ -80,7 +81,7 @@ Not an interface. A library, and the place a thing is defined once instead of tw
 |---|---|
 | `corpus.py` | The point cloud, and `split_by_power` — the split every generalisation number here comes from. |
 | `grid.py` | The solver's output, back on the grid it was written from. |
-| `agent.py` | **The inference contract.** `predict_at([B,5] of (x,y,z,t,P)) -> [B,1] K`, `predict_of([B,2] of (t,P)) -> [B,1,D,H,W] K`. Every tool downstream is written against those two and nothing else, so adding a model costs an `agent.py` and changes no caller. Either end may be the primitive: most models implement `predict_at` and get the volume derived; `spectral` runs the other way. |
+| `agent.py` | **The inference contract.** `predict_at([B,5] of (x,y,z,t,P)) -> [B,1] K`, `predict_of([B,2] of (t,P)) -> [B,1,D,H,W] K`. Every tool downstream is written against those two and nothing else, so adding a model costs an `agent.py` and changes no caller. Either end may be the primitive: most models implement `predict_at` and get the volume derived; `fmlp` runs the other way. |
 | `harness.py` | What a model does around its architecture: read the corpus, hold out a power, build, score, render, archive. |
 | `training.py` | The loop. Adam or L-BFGS, the schedule, the validation cadence, the checkpoint. |
 | `metrics.py` | RMSE, L∞, **and peak error**. |

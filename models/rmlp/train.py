@@ -1,6 +1,6 @@
 """Fit (P, t, z, y, x) -> T, and archive the run that did it.
 
-The counterpart to ``models/spectral``: the same hidden stack, but carrying the
+The counterpart to ``models/fmlp``: the same hidden stack, but carrying the
 space itself instead of leaning on a Fourier basis. That makes it 280x smaller and
 gives it 276M training points instead of 217, so full-batch is impossible and points
 are drawn at random each step.
@@ -10,7 +10,7 @@ power, the same optimiser and schedule, the same figures, the same metrics.
 
 Example::
 
-    python models/coord/train.py --run data/20260710_132221_powersweep_gpu
+    python models/rmlp/train.py --run data/20260710_132221_powersweep_gpu
 """
 
 from __future__ import annotations
@@ -30,10 +30,10 @@ from share import archiving, metrics
 from share.grid import load_run
 from share.spectral import npz_name
 
-from .model import CoordMLP
+from .model import RealMLP
 from .visualize import predict, render
 
-MODEL = "coord"
+MODEL = "rmlp"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> None:
 
     torch.manual_seed(0)
     arch = dict(width=a.width, depth=a.depth, scale=scale)
-    model = CoordMLP(**arch).to(dev)
+    model = RealMLP(**arch).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.steps)
 

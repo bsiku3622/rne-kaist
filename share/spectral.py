@@ -1,13 +1,13 @@
 """The spatial-Fourier coefficient dataset, and everything needed to use it.
 
-The ``spectral`` model does not learn a temperature at a point; it learns every
+The ``fmlp`` model does not learn a temperature at a point; it learns every
 stored Fourier coefficient of a whole snapshot, and an inverse transform turns
 those back into a field. That coefficient dataset is a *dataset* in its own right --
 derived from a solver run, cached to disk, read back at train time -- so it lives
 here in the shared data layer beside :mod:`share.grid`, not inside the model.
 
 Only ``spectral`` uses it, but keeping it here draws the line where it belongs:
-:class:`SpectralDataset` is data, :class:`~models.spectral.model.SpectralMLP` is a
+:class:`SpectralDataset` is data, :class:`~models.fmlp.model.FourierMLP` is a
 network, and the reconstruction and de-rotation that map between coefficients and
 Kelvin are properties of the *representation*, not of the three dense layers fitted
 to it. So they are methods on the dataset.
@@ -16,7 +16,7 @@ Three things live here:
 
 * :func:`build` -- transform a run into a truncated ``fft2`` coefficient box and
   write it to disk. The box itself is chosen by :func:`best_box` from the run's
-  energy spectrum; :mod:`models.spectral.dataset` is the analysis that justifies
+  energy spectrum; :mod:`models.fmlp.dataset` is the analysis that justifies
   that choice and calls this to produce the file.
 * :class:`SpectralDataset` and :func:`load` -- read a saved box back, and carry the
   operations that use it: :meth:`~SpectralDataset.reconstruct` (coefficients to
@@ -290,7 +290,7 @@ def load(run_dir: Path, energy_target: float, detrend: bool = False) -> Spectral
     """Read the box for ``energy_target`` back from ``run_dir``.
 
     Raises with the command that would build it if the file is not there, so a
-    forgotten :mod:`models.spectral.dataset` step fails loudly rather than silently
+    forgotten :mod:`models.fmlp.dataset` step fails loudly rather than silently
     loading a different budget.
     """
     path = Path(run_dir) / npz_name(energy_target, detrend)
@@ -298,7 +298,7 @@ def load(run_dir: Path, energy_target: float, detrend: bool = False) -> Spectral
         flag = " --detrend" if detrend else ""
         raise SystemExit(
             f"no {path.name} in {run_dir}\n"
-            f"build it first:  python models/spectral/dataset.py "
+            f"build it first:  python models/fmlp/dataset.py "
             f"--run {run_dir} --save-target {energy_target:g}{flag}"
         )
     z = np.load(path)

@@ -78,7 +78,7 @@ Loss weights are `--w-data`, `--w-pde`, `--w-bc`, `--w-ic`; `--double` runs in
 float64; `--tag` suffixes the archive entry.
 
 **Note what this model validates on.** `--val-fraction` holds out a random 10% of
-*points*, drawn from every power it trains on. `models/spectral` and `models/coord`
+*points*, drawn from every power it trains on. `models/fmlp` and `models/rmlp`
 hold out a whole power instead and never see it, which is a strictly harder test.
 The two sets of numbers are not comparable, and the difference is large.
 
