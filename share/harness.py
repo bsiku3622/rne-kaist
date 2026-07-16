@@ -31,7 +31,7 @@ import torch
 REPO = Path(__file__).resolve().parent.parent
 sys.path.append(str(REPO))
 
-from share import archiving, metrics, plotting, training
+from share import archiving, figures, metrics, plotting, training
 from share.corpus import MM, SimulationDataset
 from share.grid import load_run
 
@@ -171,6 +171,7 @@ def finish(name, a, run, model, architecture, predict, truth, entry, result, ext
     want = a.times or [float(run.t[len(run.t) // 4]), float(run.t[len(run.t) // 2]), float(run.t[-1])]
     plotting.planes(truth, mine, run, power, entry.figures / "field.png", name)
     plotting.scanline(truth, mine, run, power, want, entry.figures / "scanline.png", name)
+    figures.publish(entry.dir)  # mirror them into the flat gallery, keyed by this run
 
     archiving.finalise(
         entry, run,

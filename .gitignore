@@ -12,6 +12,10 @@ archive/
 # Costs nothing, deleting one does not touch the archive.
 runs/
 
+# A flat gallery of the latest figures per model+tag, mirrored out of archive/ by
+# share/figures.py. Derived and rebuildable (python -m share.figures), so not tracked.
+figures/
+
 # Raw fields, checkpoints, and the ParaView files heat_fenics.py writes
 *.npy
 *.npz
