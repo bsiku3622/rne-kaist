@@ -41,6 +41,7 @@ from torch.utils.tensorboard import SummaryWriter
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from share import archiving, metrics
+from share.checkpoints import BestCheckpoint
 from share.grid import load_run
 
 from .model import SpectralMLP, derotate_phase, reconstruct
@@ -160,6 +161,14 @@ def main(argv: list[str] | None = None) -> None:
         f"norm = {a.norm}, derotate = {a.derotate}\n"
     )
 
+    # Keep the checkpoint with the best held-out loss, not the last one: a long run
+    # overfits after its best epoch, and the two differ whenever it does. Under
+    # --norm global the transform is orthonormal, so by Parseval this held-out
+    # coefficient MSE is the held-out field's L2 error up to a fixed constant -- its
+    # argmin is the argmin of the real-space RMSE, so this selects the best-
+    # generalising volume, not merely the best fit in coefficient space.
+    best = BestCheckpoint(entry.checkpoint, mode="min")
+
     t0 = time.time()
     for ep in range(a.epochs):
         opt.zero_grad(set_to_none=True)
@@ -172,12 +181,29 @@ def main(argv: list[str] | None = None) -> None:
                 val = ((model(Xt[~trt]) - Yt[~trt]) ** 2).mean().item()
             writer.add_scalar("loss/train", loss.item(), ep)
             writer.add_scalar("loss/holdout", val, ep)
+            best.update(
+                val,
+                {
+                    "state": model.state_dict(),
+                    "architecture": arch,
+                    "mu": mu,
+                    "sd": sd,
+                    "test_p": test_p,
+                    "run_dir": str(run.dir),
+                    "config": vars(a),
+                },
+                step=ep,
+            )
             if ep % 4000 == 0 or ep == a.epochs - 1:
                 print(f"  epoch {ep:>6}  train {loss.item():.3e}  held-out {val:.3e}")
     wall = time.time() - t0
     writer.close()
-    print(f"  {wall:.0f} s\n")
+    print(f"  {wall:.0f} s   best held-out {best.best:.3e} at epoch {best.step}\n")
 
+    # score and archive the best checkpoint, not the final weights
+    model.load_state_dict(
+        torch.load(entry.checkpoint, map_location=dev, weights_only=False)["state"]
+    )
     model.eval()
     render(model, npz, run, test_p, entry.figures, a.times, a.derotate, a.vel,
            n_coef=n_coef, ramp_shape=ramp_shape)
@@ -203,18 +229,8 @@ def main(argv: list[str] | None = None) -> None:
                 f"{s['peak']:>8.2f}%   {held}"
             )
 
-    torch.save(
-        {
-            "state": model.state_dict(),
-            "architecture": arch,
-            "mu": mu,
-            "sd": sd,
-            "test_p": test_p,
-            "run_dir": str(run.dir),
-            "config": vars(a),
-        },
-        entry.checkpoint,
-    )
+    # the checkpoint is already on disk -- BestCheckpoint wrote the best epoch's
+    # weights during training, so there is no final save to make here
     archiving.finalise(
         entry,
         run,
