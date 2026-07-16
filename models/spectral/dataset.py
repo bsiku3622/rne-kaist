@@ -591,11 +591,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument(
         "--save-target",
         type=float,
-        default=0.99999,
+        default=0.9999,
         help=(
-            "energy the saved box must retain, for every power (default 0.99999, "
-            "which keeps the peak error under the 0.35%% the solver's own grid "
-            "already costs -- see simulation/README.md)"
+            "energy the saved box must retain, for every power (default 0.9999; "
+            "the tighter 0.99999 lowers the truncation floor further but roughly "
+            "doubles the stored coefficients -- which are ~99%% of a spectral "
+            "model's weights -- for little end-to-end gain, so it is not the default)"
         ),
     )
     a = ap.parse_args(argv)
