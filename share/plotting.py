@@ -39,6 +39,37 @@ INK = "#52514e"
 REFERENCE = "#009e73"  # Okabe-Ito green, for the floor / baseline curve
 
 
+def _gaussian_fit(coord: np.ndarray, rise: np.ndarray, window: float) -> dict | None:
+    """Least-squares ``A*exp(-2(x-c)^2/w^2)`` around a profile's peak, or None.
+
+    Fits the temperature *rise* (``dT``, which decays to zero away from the beam,
+    so no ambient offset is needed) within ``window`` of the peak. The trailing
+    thermal wake is not Gaussian, so fitting the whole line would let the tail set
+    the width; the window measures the peak itself. Truth and prediction get the
+    same treatment, so the width they report is comparable. Ported from
+    ``typeulli-model-training/scanline.py``; ``w`` is the 1/e^2 radius.
+    """
+    from scipy.optimize import curve_fit
+
+    def model(x: np.ndarray, amplitude: float, centre: float, width: float) -> np.ndarray:
+        return amplitude * np.exp(-2.0 * (x - centre) ** 2 / width**2)
+
+    peak = int(np.argmax(rise))
+    if float(rise[peak]) <= 1.0:  # t = 0 and cold cuts have no peak to fit
+        return None
+    selected = np.abs(coord - coord[peak]) <= window
+    if int(selected.sum()) < 4:  # three parameters need at least four points
+        return None
+    try:
+        (amplitude, centre, width), _ = curve_fit(
+            model, coord[selected], rise[selected],
+            p0=(float(rise[peak]), float(coord[peak]), window / 2.5), maxfev=10000,
+        )
+    except (RuntimeError, ValueError):
+        return None
+    return {"amplitude": float(amplitude), "centre": float(centre), "width": abs(float(width))}
+
+
 def planes(truth, pred, run, power, out: Path, label: str = "model", snap: int = -1) -> None:
     """The scanned face and the depth section, at one snapshot: truth, model, error."""
     x, y, z = run.x, run.y, run.z
@@ -77,7 +108,8 @@ def planes(truth, pred, run, power, out: Path, label: str = "model", snap: int =
 
 
 def scanline(
-    truth, pred, run, power, want, out: Path, label: str = "model", floor=None
+    truth, pred, run, power, want, out: Path, label: str = "model", floor=None,
+    gaussian: float | None = None,
 ) -> None:
     """Two cuts through the beam, each with its signed error beside it.
 
@@ -89,6 +121,12 @@ def scanline(
     Fourier coefficients it is what those coefficients reconstruct *exactly*, so the
     gap between the two error curves is the only part the network is answerable
     for. A model that predicts the field directly has no such floor and passes None.
+
+    ``gaussian`` is an optional fit half-window in mm. When given, a 1/e^2 Gaussian
+    is fitted to each profile's peak (truth and prediction alike) and overlaid
+    dotted, so a flattened or widened pool is measured rather than eyeballed; the
+    fitted radii go in the panel title. Off by default -- the fit costs a
+    ``scipy.optimize`` import and only means anything on the cuts that hit the beam.
     """
     x, y = run.x, run.y
     iy = len(y) // 2
@@ -114,7 +152,25 @@ def scanline(
             prof.plot(axis, tr, color=TRUTH, lw=1.8, label="simulation")
             prof.plot(axis, pr, color=PREDICTION, lw=1.8, ls="--", label=label)
             prof.set_ylabel("dT [K]")
-            prof.set_title(f"{name}\nt = {run.t[j]:.1f} s   RMSE {rmse:.2f} K", fontsize=9)
+
+            title = f"{name}\nt = {run.t[j]:.1f} s   RMSE {rmse:.2f} K"
+            if gaussian is not None:
+                dense = np.linspace(float(axis[0]), float(axis[-1]), 400)
+                widths = []
+                for series, colour in ((tr, TRUTH), (pr, PREDICTION)):
+                    fit = _gaussian_fit(axis, series, gaussian)
+                    if fit is None:
+                        widths.append(None)
+                        continue
+                    inside = np.abs(dense - fit["centre"]) <= gaussian
+                    prof.plot(dense[inside],
+                              fit["amplitude"] * np.exp(-2.0 * (dense[inside] - fit["centre"]) ** 2 / fit["width"] ** 2),
+                              color=colour, lw=1.0, ls=":",
+                              label="gaussian fit" if (r == 0 and c == 0 and series is tr) else None)
+                    widths.append(fit["width"])
+                if widths[0] is not None and widths[1] is not None:
+                    title += f"   w {widths[0]:.2f} -> {widths[1]:.2f} mm"
+            prof.set_title(title, fontsize=9)
             if r == 0 and c == 0:
                 prof.legend(frameon=False, fontsize=8)
 
